@@ -6,21 +6,14 @@ library(dplyr)
 
 setwd("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/")
 
-canopy_height <- raster("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/wh_vh1m.tif")
+canopy_height <- raster("wh_vh1m.tif")
+
 #laden bestanden en omzetten naar geografische entiteiten
 species_points <- read_excel("2025_DePanne_pnt.xlsx")|>
   st_as_sf(coords = c("X_Lambert", "Y_Lambert"), crs = 31370)|>
   st_transform(crs = crs(canopy_height))
 
-#kies de soort hier!!!
-
-
-canopy_height <- raster("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/wh_vh1m.tif")
-crs(canopy_height)
-#canopy_height[is.na(canopy_height)] <- -99999
-
-
-
+polygon_data <- st_read("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/PBGIS11_StageYolan/PBGIS11_StageYolan/Flora_Vlak_DePanne.shp")
 #interactieve viewer
 #tmap_mode("view")
 #tm_shape(canopy_height) +
@@ -41,12 +34,6 @@ species_points <- species_points[st_intersects(species_points, raster_extent, sp
 st_write(species_points, "species_points_processed.shp", row.names = FALSE, append = FALSE)
 
 
-
-
-# Load polygon shapefile
-polygon_data <- st_read("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/PBGIS11_StageYolan/PBGIS11_StageYolan/Flora_Vlak_DePanne.shp")
-
-
 # Calculate abundances for polygon data
 polygon_data <- polygon_data |>
   left_join(lookup_table, by = c("ABUNDANTIE" = "Code"))|>
@@ -61,4 +48,4 @@ polygon_data <- polygon_data[st_intersects(polygon_data, raster_extent, sparse =
 # Write processed polygon data to a shapefile
 st_write(polygon_data, "plant_vlakken_processed.shp", row.names = FALSE, append=FALSE)
 
-print("Polygon data processing completed.")
+print("Data pre-processing completed.")

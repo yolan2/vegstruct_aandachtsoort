@@ -89,7 +89,7 @@ chm_clas5 = reclassify(chm_ras5, classes_chm)
 
 ```
 
-Hier wordt de begrazingsdata ingeladen en geagregeerd tot op 25x25m. Een correcte filtering van deze data dient nog te gebeuren!!!
+GRAZING DENSITY: Hier wordt de begrazingsdata ingeladen en geagregeerd tot op 25x25m. Een correcte filtering van deze data dient nog te gebeuren!!!
 
 ```{r}
 load("C:/Users/yolan/Dropbox/pc/Downloads/data_westhoek (3).Rdata")
@@ -127,11 +127,6 @@ count_raster[as.numeric(names(tab))] <- as.numeric(tab)
 # Plot
 plot(count_raster, main = "Point Density Heatmap begrazing")
 
-
-writeRaster(count_raster, 
-            filename = paste0(output_folder, "grazing_density.tif"), 
-            format = "GTiff", 
-            overwrite = TRUE)
 ```
 
 MEAN HEIGHT
