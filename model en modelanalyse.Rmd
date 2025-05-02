@@ -18,6 +18,7 @@ library(INLA)
 library(data.table)
 library(spdep)
 library(Matrix)
+library(raster)
 ```
 
 ## Load Canopy Height Model (CHM) Metrics
@@ -32,26 +33,34 @@ if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 # Load CHM metrics as a named list
 chm_metrics <- list(
   #shannon = rast(file.path(input_folder, "chm_shannon.tif")),
-  mean    = rast(file.path(input_folder, "chm_mean.tif"))#,
+  mean    = rast(file.path(input_folder, "chm_mean.tif")),
   #moran   = rast(file.path(input_folder, "chm_localmoran.tif")),
   #fisher  = rast(file.path(input_folder, "chm_fisher.tif")),
   #max     = rast(file.path(input_folder, "chm_max.tif")),
   #min     = rast(file.path(input_folder, "chm_min.tif")),
-  #begrazing = rast(file.path(input_folder, "grazing_density.tif")),
+  begrazing = rast(file.path(input_folder, "grazing_density.tif"))#,
   #edgness = rast(file.path(input_folder, "chm_edgness.tif"))
 )
+
+crss = " +proj=lcc +lat_0=90 +lon_0=4.36748666666667 +lat_1=49.8333339 +lat_2=51.1666672333333 +x_0=150000.01256 +y_0=5400088.4378 +ellps=intl +units=m +no_defs  "
+
+cell_size <- 5 #default celgroote voor dit project
+
+chm_ras1 = raster('wh_vh1m.tif', crs = crss)
+chm_ras1[chm_ras1 < 0] <- NA
+
+chm_ras5 = aggregate(chm_ras1, fun = mean, fact = cell_size/res(chm_ras1))
 ```
 
 ## Functions: Process & Model per Species
 ```{r functions}
 # Analyze one species: compute metrics and fit binary & positive models
 analyze_species <- function(path, chm_metrics) {
-  species_name <- gsub("_combined_final_raster.tif", "", basename(path), fixed = TRUE)
+  species_name <- gsub("_combined.tif", "", basename(path), fixed = TRUE)
   message("Processing: ", species_name)
 
   # Load & aggregate species raster
   ras <- rast(path)
-  ras <- aggregate(ras, fact = 5, fun = "sum")
 
   # Mask distant zeros
   bin_ras <- ifel(ras > 0, 1, NA)
@@ -63,9 +72,18 @@ analyze_species <- function(path, chm_metrics) {
   # Loop over CHM metrics
   for (m in names(chm_metrics)) {
     message("  Metric: ", m)
+    if (m == "begrazing"){
+      ras_bin <- aggregate(ras_bin, fact = 5, fun = mean)
+      ras <- aggregate(ras, fact = 5, fun = mean)
+      
+    }
+      
     chm <- chm_metrics[[m]]
 
     # Stack and clean
+    print(ext(chm))
+    print(ext(ras_bin))
+    print(ext(ras))
     stk <- c(chm, ras_bin, ras)
     names(stk) <- c("chm", "species_binary", "species")
     df <- as.data.table(na.omit(as.data.frame(stk, xy = TRUE)))
@@ -78,7 +96,7 @@ analyze_species <- function(path, chm_metrics) {
     g      <- inla.read.graph(W)
     df[, spatial_id := .I]
 
-    # Binary model
+    # Binary model (logistische regressie)
     mb <- inla(
       species_binary ~ chm + f(spatial_id, model = "besag", graph = g),
       data = df, family = "binomial",
@@ -104,6 +122,24 @@ analyze_species <- function(path, chm_metrics) {
       positive_model = mp,
       data           = df
     )
+    #hier combineren we de resultaten van de binary en positive model. We nemen als het ware de som van de twee modellen
+    if (!is.null(mb) && !is.null(mp)) {
+      b_bin <- mb$summary.fixed["chm", "mean"]
+      se_bin <- mb$summary.fixed["chm", "sd"]
+      b_pos <- mp$summary.fixed["chm", "mean"]
+      se_pos <- mp$summary.fixed["chm", "sd"]
+    
+      b_total <- b_bin + b_pos
+      se_total <- sqrt(se_bin^2 + se_pos^2)
+      z_comb <- b_total / se_total
+      pval_comb <- 2 * (1 - pnorm(abs(z_comb)))
+    
+      results[[m]]$combined_effect <- list(
+        mean = b_total,
+        se = se_total,
+        pval = pval_comb
+      )
+    }
   }
   return(results)
 }
@@ -111,11 +147,13 @@ analyze_species <- function(path, chm_metrics) {
 
 ```
 
-```{r process_all}
+Hier kan je het model eindelijk runnen. Dit is echter het zwaarste stuk van heel het project. Doe dit dus niet zomaar! Om tijd te besparen kan je de test data (alternatieve species_folder) gebruiken. Hier gebruik je dan een suset van de data.
+
+```{r process_all, message=TRUE, warning=TRUE}
 # Apply analyze_species across all TIFF files
 process_all_species <- function(dir, chm_metrics) {
   all <- list.files(dir, full.names = TRUE)
-  tif <- all[endsWith(all, "_combined_final_raster.tif")]
+  tif <- all[endsWith(all, "_combined.tif")]
   out <- list()
   for (f in tif) {
     out[[basename(f)]] <- analyze_species(f, chm_metrics)
@@ -129,7 +167,7 @@ species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aanda
 all_results <- process_all_species(species_folder, chm_metrics)
 ```
 
-## Visualization of positive data
+
 ## Visualization of positive data
 ```{r run_all}
 # Assume 'all_results' is already loaded from process_all_species()
@@ -187,7 +225,7 @@ for (sp in names(all_results)) {
     file = file.path(plot_dir, paste0(sp, "_all_metrics_res.rds"))
   )
 ```
-
+Results of binary data. 
 ```{r}
 
 library(dplyr)
@@ -249,5 +287,79 @@ print(head(df_results))
 csv_file <- file.path(plot_dir, "binary_sig_summary_all.csv")
 write.csv2(df_results, csv_file, row.names = FALSE)
 cat("Written:", csv_file, "\n")
+```
+Hier combineren we het logistische (binaire) model en het gaussiaanse model. We nemen als het ware de som van de twee modellen.
+```{r}
+for (sp in names(all_results)) {
+  res <- all_results[[sp]]
+
+  for (mn in names(res)) {
+    mr <- res[[mn]]
+    if (is.null(mr$combined_effect)) next
+
+    df <- mr$data
+    var <- "chm"
+    grid <- seq(min(df[[var]]), max(df[[var]]), length.out = 100)
+
+    b <- mr$combined_effect$mean
+    se <- mr$combined_effect$se
+    z <- b / se
+    pval <- mr$combined_effect$pval
+
+    y <- exp(b * grid)  # transform to expected abundance
+
+    pd <- tibble(x = grid, fit = y)
+
+    p_comb <- ggplot(pd, aes(x = x, y = fit)) +
+      geom_line() +
+      geom_point(data = df[df$species > 0, ], aes(x = .data[[var]], y = species), alpha = 0.3) +
+      labs(
+        title = paste("Combined Effect (Binary + Gamma):", sp, mn),
+        x = var, y = "Expected abundance (unscaled)"
+      ) +
+      annotate(
+        "text",
+        x = max(df[[var]], na.rm = TRUE),
+        y = max(df$species, na.rm = TRUE),
+        label = paste0("p = ", format.pval(pval, digits = 2)),
+        hjust = 1, vjust = 1,
+        size = 4
+      ) +
+      theme_minimal()
+
+    plot(p_comb)
+
+    ggsave(file.path(plot_dir, paste0(sp, "_", mn, "_combined_effect.png")), p_comb, width = 8, height = 6, dpi = 300)
+  }
+}
+
+```
+
+```{r}
+combined_summary <- bind_rows(
+  lapply(names(all_results), function(sp) {
+    res <- all_results[[sp]]
+    bind_rows(
+      lapply(names(res), function(mn) {
+        ce <- res[[mn]]$combined_effect
+        if (is.null(ce)) return(NULL)
+        tibble(
+          Species = sp,
+          Metric = mn,
+          Mean = ce$mean,
+          SE = ce$se,
+          Pval = ce$pval
+        )
+      })
+    )
+  })
+)
+
+# Show as nice table
+kable(
+  combined_summary,
+  caption = "Combined Effect (Binary + Positive Model) by Species and Metric"
+)
+
 ```
 
