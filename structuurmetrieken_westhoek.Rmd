@@ -69,7 +69,7 @@ INLADEN RASTERS
 ```{r}
 crss = " +proj=lcc +lat_0=90 +lon_0=4.36748666666667 +lat_1=49.8333339 +lat_2=51.1666672333333 +x_0=150000.01256 +y_0=5400088.4378 +ellps=intl +units=m +no_defs  "
 
-cell_size <- 5
+cell_size <- 5 #default celgroote voor dit project
 
 chm_ras1 = raster('wh_vh1m.tif', crs = crss)
 chm_ras1[chm_ras1 < 0] <- NA
@@ -89,6 +89,8 @@ chm_clas5 = reclassify(chm_ras5, classes_chm)
 
 ```
 
+Hier wordt de begrazingsdata ingeladen en geagregeerd tot op 25x25m. Een correcte filtering van deze data dient nog te gebeuren!!!
+
 ```{r}
 load("C:/Users/yolan/Dropbox/pc/Downloads/data_westhoek (3).Rdata")
 
@@ -105,8 +107,8 @@ proj4string(data_westhoek) <- CRS(crss)
 chm_ras1 <- raster('wh_vh1m.tif', crs = crss)
 chm_ras1[chm_ras1 < 0] <- NA
 
-cell_size <- 5
-chm_ras5 <- aggregate(chm_ras1, fun = mean, fact = cell_size / res(chm_ras1)[1])
+cell_size_begrazing <- 25
+chm_ras5 <- aggregate(chm_ras1, fun = mean, fact = cell_size_begrazing / res(chm_ras1)[1])
 
 # Create an empty raster based on chm_ras5
 count_raster <- raster(chm_ras5)
@@ -123,9 +125,8 @@ tab <- table(cells)
 count_raster[as.numeric(names(tab))] <- as.numeric(tab)
 
 # Plot
-plot(count_raster, main = "Point Density Heatmap (no smoothing)")
+plot(count_raster, main = "Point Density Heatmap begrazing")
 
-output_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/"
 
 writeRaster(count_raster, 
             filename = paste0(output_folder, "grazing_density.tif"), 
@@ -178,39 +179,6 @@ chm_clas1 = reclassify(chm_ras1, classes_chm)
 chm_H_class = aggregate(chm_clas1, fact = cell_size/res(chm_clas1), sh)
 ```
 
-```{r}
-# Define aggregation factor (5x5 block)
-fact <- 10
-
-# Aggregation function based on Q1/Q4 difference
-agg_rel_diff_q1q4 <- function(x, ...) {
-  valid_neighbors <- x[!is.na(x)]
-  if (length(valid_neighbors) == 0) return(NA)
-  
-  q1 <- quantile(valid_neighbors, probs = 0.25, na.rm = TRUE)
-  
-  return(q1)
-}
-rel_diff_q1q4_raster <- aggregate(chm_ras1, fact = fact, fun = agg_rel_diff_q1q4)
-plot(rel_diff_q1q4_raster)
-```
-
-```{r}
-# Aggregate raster (summary per 5x5 block)
-plot(rel_diff_q1q4_raster)
-
-chm_min_f <- aggregate(chm_min_f, fact = 2)
-edgness <- (chm_locm_ras**5)/(rel_diff_q1q4_raster+0.4)
-plot(edgness)
-plot(chm_locm_ras)
-plot(chm_mean_f)
-folder = "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/"
-writeRaster(edgness, 
-            filename = paste0(folder, "chm_edgness.tif"), 
-            format = "GTiff", 
-            overwrite = TRUE)
-```
-
 
 
 WRITE RASTERS
@@ -245,6 +213,10 @@ writeRaster(chm_max_f,
 
 writeRaster(chm_min_f, 
             filename = paste0(folder, "chm_min.tif"), 
+            format = "GTiff", 
+            overwrite = TRUE)
+writeRaster(count_raster, 
+            filename = paste0(folder, "grazing_density.tif"), 
             format = "GTiff", 
             overwrite = TRUE)
 ```
