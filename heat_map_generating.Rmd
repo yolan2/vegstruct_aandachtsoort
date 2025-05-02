@@ -159,22 +159,58 @@ species_list <- unique(final_points$SOORTSCODE)
 kde_results <- list()
 species_list_valid = list()
 
+chm_ras5 = raster("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/chm_mean.tif")
 # Iterate over each species
 for (species in species_list) {
   
   species_pts <- final_points %>%
-    filter(SOORTSCODE == species, !is.na(Mediaan))  # remove NA weights
+    filter(SOORTSCODE == species, !is.na(Mediaan))|>
+    st_transform(crs(chm_ras5))
   
   if (nrow(species_pts) >= 30) {
     species_list_valid <- c(species_list_valid, species)
     coords <- st_coordinates(species_pts)
     weights <- species_pts$Mediaan  # use Mediaan field for weights
 
-    window <- as.owin(st_bbox(final_points))  # same window for all species
+    # Extract extent and resolution from chm_ras5
+    ext_ras <- ext(chm_ras5)
+    res_ras <- res(chm_ras5)   # cell size (should be 5, 5)
+    
+    # Define window based on chm_ras5 extent
+    window <- owin(
+      xrange = c(ext_ras[1], ext_ras[2]),
+      yrange = c(ext_ras[3], ext_ras[4])
+    )
+    
+    # Create ppp object using *that exact window*
     ppp_obj <- ppp(x = coords[,1], y = coords[,2], window = window, marks = weights)
 
-    # Calculate weighted density
-    dens <- density(ppp_obj, weights = marks(ppp_obj), sigma = 2, eps = 5) #standaarddeviatie van 2 zorgt voor +/-96% binnen de 5m radius
+    # Create an im object with exact chm_ras5 grid
+    xrange <- c(ext_ras[1], ext_ras[2])
+    yrange <- c(ext_ras[3], ext_ras[4])
+    nx <- ncol(chm_ras5)
+    ny <- nrow(chm_ras5)
+    
+    # Create the pixel grid for KDE
+    template_im <- im(
+      matrix(0, nrow = ny, ncol = nx),
+      xcol = seq(xrange[1] + res_ras[1]/2, xrange[2] - res_ras[1]/2, length.out = nx),
+      yrow = seq(yrange[1] + res_ras[2]/2, yrange[2] - res_ras[2]/2, length.out = ny)
+    )
+
+    
+    # Run KDE using that exact pixel grid
+    dens <- density(
+      ppp_obj,
+      weights = marks(ppp_obj),
+      sigma = 2,
+      at = "pixels",
+      edge = TRUE,
+      dimyx = c(ny, nx),
+      xy = list(x = template_im$xcol, y = template_im$yrow)
+    )
+
+
 
     # Rescale to match total number of individuals
     total_individuals <- sum(weights, na.rm = TRUE)

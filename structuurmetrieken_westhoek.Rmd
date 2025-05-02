@@ -92,41 +92,19 @@ chm_clas5 = reclassify(chm_ras5, classes_chm)
 GRAZING DENSITY: Hier wordt de begrazingsdata ingeladen en geagregeerd tot op 25x25m. Een correcte filtering van deze data dient nog te gebeuren!!!
 
 ```{r}
-load("C:/Users/yolan/Dropbox/pc/Downloads/data_westhoek (3).Rdata")
+chm_ras25m <- aggregate(chm_ras1, fact = 25 / res(chm_ras1), fun = mean)
 
-# Suppose your data is now in an object called 'gps_points' (adjust if needed)
-# It should have columns X and Y
-# Convert to SpatialPoints
+load("C:/Users/yolan/Dropbox/pc/Downloads/data_westhoek (3).Rdata")
 data_westhoek$x <- as.numeric(as.character(data_westhoek$x))
 data_westhoek$y <- as.numeric(as.character(data_westhoek$y))
-coordinates(data_westhoek) <- ~x+y
-
+coordinates(data_westhoek) <- ~x + y
 proj4string(data_westhoek) <- CRS(crss)
 
-# Load and prepare the CHM raster
-chm_ras1 <- raster('wh_vh1m.tif', crs = crss)
-chm_ras1[chm_ras1 < 0] <- NA
+# Rasterize: count number of points per 5x5 m cell aligned with chm_ras5
+grazing_density <- rasterize(data_westhoek, chm_ras25m, fun = "count", background = 0)
 
-cell_size_begrazing <- 25
-chm_ras5 <- aggregate(chm_ras1, fun = mean, fact = cell_size_begrazing / res(chm_ras1)[1])
-
-# Create an empty raster based on chm_ras5
-count_raster <- raster(chm_ras5)
-values(count_raster) <- 0
-
-# Count points per cell
-# First extract the cell number for each point
-cells <- cellFromXY(count_raster, data_westhoek)
-
-# Then tabulate counts
-tab <- table(cells)
-
-# Assign counts to raster
-count_raster[as.numeric(names(tab))] <- as.numeric(tab)
-
-# Plot
-plot(count_raster, main = "Point Density Heatmap begrazing")
-
+# Plot to verify
+plot(grazing_density, main = "Begrazingsdichtheid (5m raster)")
 ```
 
 MEAN HEIGHT
@@ -135,7 +113,7 @@ chm_mean_f = aggregate(chm_ras1, fun = mean, fact = cell_size/res(chm_ras1))
 
 chm_min_f = aggregate(chm_ras1, fun = min, fact = cell_size/res(chm_ras1))
 
-#chm_max_f = aggregate(chm_ras1, fun = max, fact = cell_size/res(chm_ras1))
+chm_max_f = aggregate(chm_ras1, fun = max, fact = cell_size/res(chm_ras1))
 
 ```
 
@@ -153,10 +131,9 @@ chm_fish = aggregate(chm_ras1, fact = cell_size/res(chm_ras1), fun = skewness, n
 
 ```
 
-MORAN
-```{r}
-#Horizontale heterogeniteit via Morans I MOVING WINDOW
+MORAN: Horizontale heterogeniteit via Morans I MOVING WINDOW
 #omdat morans I wat meer moeite heeft met NO data values gaan we hier wat minder streng zijn rond NA waardes toekennen. Daarom laden we terug het originele bestand in. (chm_ras1_moran). Ook zal de warning subgraphs verschijnen. Dit gebeurt voor 5 cellen in het raster. Concreet wil dat zeggen dat er één of meerdere cellen geisoleerd zijn geraakt en dus geen buren hebben. De grootste cluster verbonden cellen wordt behouden en wordt gebruikt voor morans i. 
+```{r}
 chm_ras1_moran = raster('wh_vh1m.tif', crs = crss)
 chm_locm_ras = aggregate(chm_ras1_moran, fun = moran_i, fact = 10/res(chm_ras1))
 
@@ -210,6 +187,15 @@ writeRaster(chm_min_f,
             filename = paste0(folder, "chm_min.tif"), 
             format = "GTiff", 
             overwrite = TRUE)
+writeRaster(count_raster, 
+            filename = paste0(folder, "grazing_density.tif"), 
+            format = "GTiff", 
+            overwrite = TRUE)
+```
+
+Of als je slechts eentje wilt schrijven:
+```{r}
+folder = "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/"
 writeRaster(count_raster, 
             filename = paste0(folder, "grazing_density.tif"), 
             format = "GTiff", 
