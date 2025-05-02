@@ -49,6 +49,7 @@
 *.asc
 *.img
 *.nc
+*.cpg
 
 # Output & plots
 *.png
