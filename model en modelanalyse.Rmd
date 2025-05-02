@@ -65,9 +65,8 @@ analyze_species <- function(path, chm_metrics) {
   # Mask distant zeros
   bin_ras <- ifel(ras > 0, 1, NA)
   d0      <- distance(bin_ras)
-  ras[d0 >= 100 & ras == 0] <- NA
+  ras[d0 >= 40 & ras == 0] <- NA #we zijn niet heel veel met extreem veel nuldata. Dat zorgt enkel voor extra data voor het ruimtelijke model. Daarom beperken we de nulwaarnemingen tot 40m van de dichtsbijzijnde record die niet nul is.
   ras_bin <- ifel(ras > 0, 1, 0)
-
   results <- list()
   # Loop over CHM metrics
   for (m in names(chm_metrics)) {
@@ -86,8 +85,12 @@ analyze_species <- function(path, chm_metrics) {
     print(ext(ras))
     stk <- c(chm, ras_bin, ras)
     names(stk) <- c("chm", "species_binary", "species")
-    df <- as.data.table(na.omit(as.data.frame(stk, xy = TRUE)))
+    vals <- terra::values(stk, dataframe = TRUE, na.rm = TRUE)
+    coords <- terra::xyFromCell(stk, which(!is.na(vals[[1]])))
+    df <- as.data.table(cbind(coords, vals))
     if (nrow(df) == 0 || sum(df$species_binary) == 0) next
+    
+    message("neighboorhoud object berekenen")
 
     # Spatial structure
     coords <- as.matrix(df[, .(x, y)])
@@ -95,6 +98,7 @@ analyze_species <- function(path, chm_metrics) {
     W      <- as(nb2mat(nb, style = "B"), "sparseMatrix"); diag(W) <- 0
     g      <- inla.read.graph(W)
     df[, spatial_id := .I]
+    message("neighboorhoud object klaar")
 
     # Binary model (logistische regressie)
     mb <- inla(
@@ -103,6 +107,7 @@ analyze_species <- function(path, chm_metrics) {
       control.compute = list(dic = TRUE, waic = TRUE),
       control.predictor = list(compute = TRUE)
     )
+    message("binair model klaar")
 
     # Positive (gamma) model
     dfp <- df[species > 0]
@@ -115,6 +120,7 @@ analyze_species <- function(path, chm_metrics) {
         control.predictor = list(compute = TRUE)
       )
     }
+    message("positief model klaar")
 
     # Store
     results[[m]] <- list(
@@ -162,8 +168,8 @@ process_all_species <- function(dir, chm_metrics) {
 }
 
 # Run modeling
-species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten/"
-#species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten_test/"
+#species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten/"
+species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten_test/"
 all_results <- process_all_species(species_folder, chm_metrics)
 ```
 
