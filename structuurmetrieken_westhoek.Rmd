@@ -14,28 +14,13 @@ STATISTIEKEN
 ############
 #Inladen van packages
 ```{r}
-library(car)
-library(mFD)
-library(tidyverse)
-library(ape)
-library(rasterVis)
-library(LambertW)
-library(terra)
-library(moments)
 library(raster)
-library(ggpubr)
-library(ggplot2)
-library(dplyr)
-library(spdep)
-library(raster)
-library(rasterdiv)
-library(sf)
 library(vegan)
-library(GGally)
-library(plotly)
-library(tidyverse)
-library(RColorBrewer)
-library(terra)
+library(spdep)
+library(ape)
+
+
+#functie voor berekenen shannon roughness
 sh <- function(x,...){
   x = table(na.omit(as.vector(x)))
   return(diversity(x, index = "shannon"))
@@ -47,26 +32,29 @@ library(spdep)
 
 moran_i <- function(x, ...) {
   valid_values <- na.omit(x)
-  
+  # als er meer dan 5 in het totaal aantal van 25 cellen NA zijn wordt er geen Morans I berekend
   if (length(valid_values) < 5) {
     return(NA)
   }
   
   cell_size <- sqrt(length(x))
   coords <- expand.grid(1:cell_size, 1:cell_size)
-  
   coords <- coords[!is.na(x), ]
+  nb <- dnearneigh(coords, 0, 1.1)#angrenzende cellen worden gedefinieerd als cellen waarvan het celcentrum op maximaal 1m ligt van het centrum van een cel. 
   
-  nb <- dnearneigh(coords, 0, 1.5)
   
-  if (length(nb) == 0 || sum(card(nb)) == 0) {
-    return(NA)  # No neighbors left after NA filtering
+  degrees <- card(nb)
+  
+  # Filter to only nodes with non-zero degree
+  nonzero_degrees <- sum(degrees > 0)
+  
+  # Check if we have at least 20 conneted nodes
+  if (nonzero_degrees < 20) {
+    return(NA)
   }
   
   wts_listw <- nb2listw(nb, style = "B", zero.policy = TRUE)  # <<< HERE: allow zero neighbors
-  
   x_valid <- as.vector(valid_values)
-  
   moran <- Moran.I(x_valid, w = listw2mat(wts_listw), na.rm = TRUE, scaled = TRUE)
   
   return(moran$observed)
@@ -129,7 +117,7 @@ chm_fish = aggregate(chm_ras1, fact = cell_size/res(chm_ras1), fun = skewness, n
 MORAN
 ```{r}
 #Horizontale heterogeniteit via Morans I MOVING WINDOW
-#omdat morans I wat meer moeite heeft met NO data values gaan we hier wat minder streng zijn rond NA waardes toekennen. Daarom laden we terug het originele bestand in. (chm_ras1_moran). Warnings mag je negeren
+#omdat morans I wat meer moeite heeft met NO data values gaan we hier wat minder streng zijn rond NA waardes toekennen. Daarom laden we terug het originele bestand in. (chm_ras1_moran). Ook zal de warning subgraphs verschijnen. Dit gebeurt voor 5 cellen in het raster. Concreet wil dat zeggen dat er één of meerdere cellen geisoleerd zijn geraakt en dus geen buren hebben. De grootste cluster verbonden cellen wordt behouden en wordt gebruikt voor morans i. 
 chm_ras1_moran = raster('wh_vh1m.tif', crs = crss)
 chm_locm_ras = aggregate(chm_ras1_moran, fun = moran_i, fact = 10/res(chm_ras1))
 
