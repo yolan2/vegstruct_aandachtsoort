@@ -5,7 +5,7 @@
 .Rproj.user/
 *.Rproj
 
-# R Markdown
+# R Markdown & knitr
 *_cache/
 *_files/
 *.utf8.md
@@ -15,8 +15,9 @@
 *.html
 *.qmd
 
-# Data files (you can tweak these as needed)
+# Common data formats
 *.csv
+*.tsv
 *.xlsx
 *.xls
 *.sav
@@ -24,19 +25,30 @@
 *.rda
 *.RData
 *.json
-*.tsv
+*.xml
+*.txt
 
-# Spatial data
+# Spatial / GIS data
 *.tif
 *.tiff
+*.tfw
+*.ovr
+*.aux
+*.aux.xml
 *.shp
 *.shx
 *.dbf
 *.prj
+*.sbn
+*.sbx
 *.gdb
 *.gpkg
 *.kml
+*.kmz
 *.geojson
+*.asc
+*.img
+*.nc
 
 # Output & plots
 *.png
@@ -44,7 +56,30 @@
 *.jpeg
 *.pdf
 *.svg
+*.bmp
+*.eps
+*.gif
 
-# Misc
+# Common R output directories
+/output/
+/figures/
+/results/
+*.log
+*.bak
+*.tmp
+*.temp
+
+# OS & editor-specific
 .DS_Store
 Thumbs.db
+desktop.ini
+*.swp
+*.lock
+
+# Project-specific extras
+*.zip
+*.tar
+*.gz
+*.tar.gz
+*.7z
+*.rar
