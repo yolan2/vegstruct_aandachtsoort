@@ -1,0 +1,220 @@
+---
+title: "structuurmetrieken westhoek"
+author: "Yolan Bosteels"
+date: "2025-04-25"
+output: html_document
+---
+
+```{r}
+wd <- ("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/")
+setwd(wd)
+```
+############
+STATISTIEKEN
+############
+#Inladen van packages
+```{r}
+library(car)
+library(mFD)
+library(tidyverse)
+library(ape)
+library(rasterVis)
+library(LambertW)
+library(terra)
+library(moments)
+library(raster)
+library(ggpubr)
+library(ggplot2)
+library(dplyr)
+library(spdep)
+library(raster)
+library(rasterdiv)
+library(sf)
+library(vegan)
+library(GGally)
+library(plotly)
+library(tidyverse)
+library(RColorBrewer)
+library(terra)
+sh <- function(x,...){
+  x = table(na.omit(as.vector(x)))
+  return(diversity(x, index = "shannon"))
+}
+
+library(spdep)
+
+library(spdep)
+
+moran_i <- function(x, ...) {
+  valid_values <- na.omit(x)
+  
+  if (length(valid_values) < 5) {
+    return(NA)
+  }
+  
+  cell_size <- sqrt(length(x))
+  coords <- expand.grid(1:cell_size, 1:cell_size)
+  
+  coords <- coords[!is.na(x), ]
+  
+  nb <- dnearneigh(coords, 0, 1.5)
+  
+  if (length(nb) == 0 || sum(card(nb)) == 0) {
+    return(NA)  # No neighbors left after NA filtering
+  }
+  
+  wts_listw <- nb2listw(nb, style = "B", zero.policy = TRUE)  # <<< HERE: allow zero neighbors
+  
+  x_valid <- as.vector(valid_values)
+  
+  moran <- Moran.I(x_valid, w = listw2mat(wts_listw), na.rm = TRUE, scaled = TRUE)
+  
+  return(moran$observed)
+}
+
+
+
+
+```
+
+INLADEN RASTERS
+```{r}
+crss = " +proj=lcc +lat_0=90 +lon_0=4.36748666666667 +lat_1=49.8333339 +lat_2=51.1666672333333 +x_0=150000.01256 +y_0=5400088.4378 +ellps=intl +units=m +no_defs  "
+
+cell_size <- 5
+
+chm_ras1 = raster('wh_vh1m.tif', crs = crss)
+chm_ras1[chm_ras1 < 0] <- NA
+
+chm_ras5 = aggregate(chm_ras1, fun = mean, fact = cell_size/res(chm_ras1))
+
+
+classes_df = c(-Inf,1, 1,1,2,2,2,5,3,5,Inf,4)
+classes_chm = matrix(classes_df,ncol = 3, byrow=T)
+classes_df = c(-Inf, 0,1, 0, 0.25,2, 0.25,0.5,3, 0.5,0.75,4,0.75,1,5)
+
+
+chm_clas5 = reclassify(chm_ras5, classes_chm)
+
+
+
+
+```
+
+
+MEAN HEIGHT
+```{r}
+chm_mean_f = aggregate(chm_ras1, fun = mean, fact = cell_size/res(chm_ras1))
+
+chm_min_f = aggregate(chm_ras1, fun = min, fact = cell_size/res(chm_ras1))
+
+#chm_max_f = aggregate(chm_ras1, fun = max, fact = cell_size/res(chm_ras1))
+
+```
+
+ROUGHNESS
+```{r}
+#Verticale heterogeniteit via Variantie AGGREGATED 0.25x0.25
+chm_var = aggregate(chm_ras1, fact = cell_size/res(chm_ras1), fun = sd, na.rm = T)
+
+```
+
+DISTRIBUTION
+```{r}
+#Verticale heterogeniteit via Variantie AGGREGATED 0.25x0.25
+chm_fish = aggregate(chm_ras1, fact = cell_size/res(chm_ras1), fun = skewness, na.rm = T) 
+
+```
+
+MORAN
+```{r}
+#Horizontale heterogeniteit via Morans I MOVING WINDOW
+#omdat morans I wat meer moeite heeft met NO data values gaan we hier wat minder streng zijn rond NA waardes toekennen. Daarom laden we terug het originele bestand in. (chm_ras1_moran). Warnings mag je negeren
+chm_ras1_moran = raster('wh_vh1m.tif', crs = crss)
+chm_locm_ras = aggregate(chm_ras1_moran, fun = moran_i, fact = 10/res(chm_ras1))
+
+```
+```{r}
+plot(chm_locm_ras)
+```
+
+SHANNON
+```{r}
+#Verticale heterogeniteit via Shannon
+classes_df = c(-Inf,0.5, 1,0.5,2,3,2,Inf,3)
+classes_chm = matrix(classes_df,ncol = 3, byrow=T)
+chm_clas1 = reclassify(chm_ras1, classes_chm)
+chm_H_class = aggregate(chm_clas1, fact = cell_size/res(chm_clas1), sh)
+```
+
+```{r}
+# Define aggregation factor (5x5 block)
+fact <- 10
+
+# Aggregation function based on Q1/Q4 difference
+agg_rel_diff_q1q4 <- function(x, ...) {
+  valid_neighbors <- x[!is.na(x)]
+  if (length(valid_neighbors) == 0) return(NA)
+  
+  q1 <- quantile(valid_neighbors, probs = 0.25, na.rm = TRUE)
+  
+  return(q1)
+}
+rel_diff_q1q4_raster <- aggregate(chm_ras1, fact = fact, fun = agg_rel_diff_q1q4)
+plot(rel_diff_q1q4_raster)
+```
+
+```{r}
+# Aggregate raster (summary per 5x5 block)
+plot(rel_diff_q1q4_raster)
+
+chm_min_f <- aggregate(chm_min_f, fact = 2)
+edgness <- (chm_locm_ras**5)/(rel_diff_q1q4_raster+0.4)
+plot(edgness)
+plot(chm_locm_ras)
+plot(chm_mean_f)
+folder = "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/"
+writeRaster(edgness, 
+            filename = paste0(folder, "chm_edgness.tif"), 
+            format = "GTiff", 
+            overwrite = TRUE)
+```
+
+
+
+WRITE RASTERS
+```{r}
+folder = "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/"
+
+
+writeRaster(chm_H_class, 
+            filename = paste0(folder, "chm_shannon.tif"), 
+            format = "GTiff", 
+            overwrite = TRUE)
+
+writeRaster(chm_mean_f, 
+            filename = paste0(folder, "chm_mean.tif"), 
+            format = "GTiff", 
+            overwrite = TRUE)
+
+writeRaster(chm_locm_ras, 
+            filename = paste0(folder, "chm_localmoran.tif"), 
+            format = "GTiff", 
+            overwrite = TRUE)
+
+writeRaster(chm_fish, 
+            filename = paste0(folder, "chm_fisher.tif"), 
+            format = "GTiff", 
+            overwrite = TRUE)
+
+writeRaster(chm_max_f, 
+            filename = paste0(folder, "chm_max.tif"), 
+            format = "GTiff", 
+            overwrite = TRUE)
+
+writeRaster(chm_min_f, 
+            filename = paste0(folder, "chm_min.tif"), 
+            format = "GTiff", 
+            overwrite = TRUE)
+```
+

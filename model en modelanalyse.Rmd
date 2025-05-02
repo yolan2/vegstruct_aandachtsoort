@@ -1,0 +1,253 @@
+---
+title: "Model Vegetatiestructuur & Visualisatie"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Global options
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+
+# Required libraries
+library(tidyverse)
+library(terra)
+library(INLA)
+library(data.table)
+library(spdep)
+library(Matrix)
+```
+
+## Load Canopy Height Model (CHM) Metrics
+```{r load_chm}
+# Define input paths
+input_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/"
+plot_dir     <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten_results/plots"
+
+# Create plot directory if needed
+if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
+
+# Load CHM metrics as a named list
+chm_metrics <- list(
+  #shannon = rast(file.path(input_folder, "chm_shannon.tif")),
+  mean    = rast(file.path(input_folder, "chm_mean.tif"))#,
+  #moran   = rast(file.path(input_folder, "chm_localmoran.tif")),
+  #fisher  = rast(file.path(input_folder, "chm_fisher.tif")),
+  #max     = rast(file.path(input_folder, "chm_max.tif")),
+  #min     = rast(file.path(input_folder, "chm_min.tif")),
+  #begrazing = rast(file.path(input_folder, "grazing_density.tif")),
+  #edgness = rast(file.path(input_folder, "chm_edgness.tif"))
+)
+```
+
+## Functions: Process & Model per Species
+```{r functions}
+# Analyze one species: compute metrics and fit binary & positive models
+analyze_species <- function(path, chm_metrics) {
+  species_name <- gsub("_combined_final_raster.tif", "", basename(path), fixed = TRUE)
+  message("Processing: ", species_name)
+
+  # Load & aggregate species raster
+  ras <- rast(path)
+  ras <- aggregate(ras, fact = 5, fun = "sum")
+
+  # Mask distant zeros
+  bin_ras <- ifel(ras > 0, 1, NA)
+  d0      <- distance(bin_ras)
+  ras[d0 >= 100 & ras == 0] <- NA
+  ras_bin <- ifel(ras > 0, 1, 0)
+
+  results <- list()
+  # Loop over CHM metrics
+  for (m in names(chm_metrics)) {
+    message("  Metric: ", m)
+    chm <- chm_metrics[[m]]
+
+    # Stack and clean
+    stk <- c(chm, ras_bin, ras)
+    names(stk) <- c("chm", "species_binary", "species")
+    df <- as.data.table(na.omit(as.data.frame(stk, xy = TRUE)))
+    if (nrow(df) == 0 || sum(df$species_binary) == 0) next
+
+    # Spatial structure
+    coords <- as.matrix(df[, .(x, y)])
+    nb     <- knearneigh(coords, k = 8) |> knn2nb(sym = TRUE)
+    W      <- as(nb2mat(nb, style = "B"), "sparseMatrix"); diag(W) <- 0
+    g      <- inla.read.graph(W)
+    df[, spatial_id := .I]
+
+    # Binary model
+    mb <- inla(
+      species_binary ~ chm + f(spatial_id, model = "besag", graph = g),
+      data = df, family = "binomial",
+      control.compute = list(dic = TRUE, waic = TRUE),
+      control.predictor = list(compute = TRUE)
+    )
+
+    # Positive (gamma) model
+    dfp <- df[species > 0]
+    mp  <- NULL
+    if (nrow(dfp) > 0) {
+      mp <- inla(
+        species ~ chm + f(spatial_id, model = "besag", graph = g),
+        data = dfp, family = "gamma",
+        control.compute = list(dic = TRUE, waic = TRUE),
+        control.predictor = list(compute = TRUE)
+      )
+    }
+
+    # Store
+    results[[m]] <- list(
+      binary_model   = mb,
+      positive_model = mp,
+      data           = df
+    )
+  }
+  return(results)
+}
+
+
+```
+
+```{r process_all}
+# Apply analyze_species across all TIFF files
+process_all_species <- function(dir, chm_metrics) {
+  all <- list.files(dir, full.names = TRUE)
+  tif <- all[endsWith(all, "_combined_final_raster.tif")]
+  out <- list()
+  for (f in tif) {
+    out[[basename(f)]] <- analyze_species(f, chm_metrics)
+  }
+  return(out)
+}
+
+# Run modeling
+species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten/"
+#species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten_test/"
+all_results <- process_all_species(species_folder, chm_metrics)
+```
+
+## Visualization of positive data
+## Visualization of positive data
+```{r run_all}
+# Assume 'all_results' is already loaded from process_all_species()
+
+# Loop over each species
+for (sp in names(all_results)) {
+  res <- all_results[[sp]]  # res is a list of models per metric
+
+  for (mn in names(res)) {
+    mr <- res[[mn]]
+    # Skip if no positive model
+    if (is.null(mr$positive_model)) next
+
+    # Prediction plot
+    df <- mr$data
+    var <- "chm"
+    grid <- seq(min(df[[var]]), max(df[[var]]), length.out = 100)
+    b0   <- mr$positive_model$summary.fixed["(Intercept)", "mean"]
+    b1   <- mr$positive_model$summary.fixed[var, "mean"]
+    prec <- mr$positive_model$summary.hyperpar[1, "mean"]
+    linp <- b0 + b1 * grid
+    mp   <- exp(linp)
+    lo   <- qgamma(0.05, shape = prec, scale = mp/prec)
+    hi   <- qgamma(0.95, shape = prec, scale = mp/prec)
+    pd   <- tibble(x = grid, fit = mp, lower = lo, upper = hi)
+
+    est <- b1
+    se  <- mr$positive_model$summary.fixed[var, "sd"]
+    z   <- est / se
+    pval <- 2 * (1 - pnorm(abs(z)))
+
+    p2 <- ggplot(pd, aes(x = x, y = fit)) +
+      geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+      geom_line() +
+      geom_point(data = df[df$species > 0, ], aes(x = .data[[var]], y = species), alpha = 0.3) +
+      labs(title = paste("Gamma Fit:", sp, mn), x = var, y = "Abundance") +
+      theme_minimal() +
+      annotate(
+        "text",
+        x = max(df[[var]], na.rm = TRUE),
+        y = max(df$species, na.rm = TRUE),
+        label = paste0("p = ", format.pval(pval, digits = 2)),
+        hjust = 1, vjust = 1,
+        size = 4
+      )
+    plot(p2)
+    ggsave(file.path(plot_dir, paste0(sp, "_", mn, "_gamma.png")), p2, width = 8, height = 6, dpi = 300)
+  }
+}
+```
+
+```{r}
+  saveRDS(
+    res,
+    file = file.path(plot_dir, paste0(sp, "_all_metrics_res.rds"))
+  )
+```
+
+```{r}
+
+library(dplyr)
+library(tibble)
+library(knitr)
+
+
+# For each species file, run analyze_species() and pull significant binary predictors
+species_files <- list.files(species_folder)
+binary_sig_summary_all <- bind_rows(
+  lapply(species_files, function(f) {
+    sp  <- sub("_combined_final_raster.tif", "", basename(f), fixed = TRUE)
+    res <- all_results[[sp]]
+    print(sp)
+    
+    # For each metric in that species, extract binary_model fixed effects
+    bind_rows(
+      lapply(names(res), function(mn) {
+        bm <- res[[mn]]$binary_model
+        if (is.null(bm)) return(NULL)
+        
+        fe <- as.data.frame(bm$summary.fixed) %>%
+          rownames_to_column("Predictor") %>%
+          rename(
+            mean    = mean,
+            lower90 = `0.025quant`,
+            upper90 = `0.975quant`
+          ) %>%
+          mutate(
+            Species = sp,
+            Metric  = mn
+          ) %>%
+          select(Species, Metric, Predictor, mean, lower90, upper90)
+        
+        fe
+      })
+    )
+  })
+)
+
+# Print
+if (nrow(binary_sig_summary_all) > 0) {
+  kable(
+    binary_sig_summary_all,
+    caption = "Significant Binary‐Model Predictors by Species and Metric"
+  )
+} else {
+  cat("No significant binary‐model predictors found across any species.\n")
+}
+
+```
+
+```{r}
+df_results <- as.data.frame(binary_sig_summary_all)
+
+# inspect
+print(head(df_results))
+
+csv_file <- file.path(plot_dir, "binary_sig_summary_all.csv")
+write.csv2(df_results, csv_file, row.names = FALSE)
+cat("Written:", csv_file, "\n")
+```
+

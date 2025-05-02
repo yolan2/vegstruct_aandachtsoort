@@ -1,0 +1,67 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+
+
+```{r}
+# Load required libraries
+library(raster)
+library(sp)
+
+# Define CRS string
+crss <- "+proj=lcc +lat_0=90 +lon_0=4.36748666666667 +lat_1=49.8333339 +lat_2=51.1666672333333 +x_0=150000.01256 +y_0=5400088.4378 +ellps=intl +units=m +no_defs"
+
+# Load the Rdata file
+load("C:/Users/yolan/Dropbox/pc/Downloads/data_westhoek (3).Rdata")
+
+# Check what is loaded
+ls()
+
+# Suppose your data is now in an object called 'gps_points' (adjust if needed)
+# It should have columns X and Y
+# Convert to SpatialPoints
+data_westhoek$x <- as.numeric(as.character(data_westhoek$x))
+data_westhoek$y <- as.numeric(as.character(data_westhoek$y))
+coordinates(data_westhoek) <- ~x+y
+
+proj4string(data_westhoek) <- CRS(crss)
+
+# Load and prepare the CHM raster
+chm_ras1 <- raster('wh_vh1m.tif', crs = crss)
+chm_ras1[chm_ras1 < 0] <- NA
+
+cell_size <- 5
+chm_ras5 <- aggregate(chm_ras1, fun = mean, fact = cell_size / res(chm_ras1)[1])
+
+# Create an empty raster based on chm_ras5
+count_raster <- raster(chm_ras5)
+values(count_raster) <- 0
+
+# Count points per cell
+# First extract the cell number for each point
+cells <- cellFromXY(count_raster, data_westhoek)
+
+# Then tabulate counts
+tab <- table(cells)
+
+# Assign counts to raster
+count_raster[as.numeric(names(tab))] <- as.numeric(tab)
+
+# Plot
+plot(count_raster, main = "Point Density Heatmap (no smoothing)")
+
+output_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/"
+
+writeRaster(count_raster, 
+            filename = paste0(output_folder, "grazing_density.tif"), 
+            format = "GTiff", 
+            overwrite = TRUE)
+
+
+```

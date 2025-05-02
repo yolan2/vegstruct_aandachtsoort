@@ -1,0 +1,50 @@
+# R specific
+.Rhistory
+.RData
+.Rapp.history
+.Rproj.user/
+*.Rproj
+
+# R Markdown
+*_cache/
+*_files/
+*.utf8.md
+*.knit.md
+
+# Quarto (if used)
+*.html
+*.qmd
+
+# Data files (you can tweak these as needed)
+*.csv
+*.xlsx
+*.xls
+*.sav
+*.rds
+*.rda
+*.RData
+*.json
+*.tsv
+
+# Spatial data
+*.tif
+*.tiff
+*.shp
+*.shx
+*.dbf
+*.prj
+*.gdb
+*.gpkg
+*.kml
+*.geojson
+
+# Output & plots
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.svg
+
+# Misc
+.DS_Store
+Thumbs.db

@@ -1,0 +1,221 @@
+---
+title: "Heat Map Generating"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(terra)
+library(sf)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(exactextractr)
+library(spatstat)
+terraOptions(tempdir = tempdir())
+``` 
+
+# 1. Load Input Data
+
+```{r load-data}
+# Load actual data paths
+output_dir <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten/"
+dir.create(output_dir, showWarnings = FALSE)
+
+reference_raster <- rast("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/wh_vh5m.tif")
+species_points <- read.csv2("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/2025_DePanne_pnt.csv") %>%
+  st_as_sf(coords = c("X_Lambert", "Y_Lambert"), crs = "EPSG:31370") %>%
+  filter(!is.na(SOORTSCODE))
+plant_polygons <- st_read("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/PBGIS11_StageYolan/PBGIS11_StageYolan/Flora_Vlak_DePanne.shp")
+```
+
+# 2. Resample Raster to Match 1m Resolution
+
+```{r resample-raster}
+# Make sure both layers have the same CRS as the reference raster
+species_points <- st_transform(species_points, crs(reference_raster))
+plant_polygons <- st_transform(plant_polygons, crs(reference_raster))
+
+```
+
+# 3. Filter Points and Polygons by Year and Type
+
+```{r filter-points-polygons}
+filtered_species_points <- species_points %>%
+  filter(JAAR > 2014, TYPE == "Aandachtssoort")
+
+filtered_plant_polygons <- plant_polygons %>%
+  filter(JAAR > 2014)
+```
+
+# 4. Remove Overlapping Polygons per Species
+
+```{r remove-overlapping}
+plant_polygons_nodup <- filtered_plant_polygons %>%
+  group_by(SOORTSCODE) %>%
+  filter(!duplicated(st_as_binary(geometry)))
+```
+
+# 5. Spatial Join: Species Points with Plant Polygons
+
+```{r spatial-join}
+joined_species <- st_join(filtered_species_points, plant_polygons_nodup, join = st_intersects)
+
+# Remove points with same SOORTSCODE
+species_points_cleaned <- joined_species %>%
+  filter(is.na(SOORTSCODE.y) | SOORTSCODE.x != SOORTSCODE.y)
+```
+
+# 6. Aggregate Species Points by Year
+
+```{r aggregate-points}
+# Buffering 20m and dissolving
+species_points_buffered <- filtered_species_points %>%
+  group_by(JAAR) %>%
+  summarise(geometry = st_union(st_buffer(geometry, 20)))
+```
+
+# 7. Buffer Resulting Polygons (1.5 meters)
+
+```{r buffer-polygons}
+buffered_polygons <- st_buffer(species_points_buffered, dist = 1.5)
+```
+
+# 8. Union Polygons and Summarize YEARs
+
+```{r union-polygons}
+unioned_polygons <- buffered_polygons %>%
+  st_union() %>%
+  st_cast("POLYGON")
+
+# Dummy YEAR_List column (in real use: summarize intersected YEARs)
+unioned_polygons_sf <- st_sf(geometry = unioned_polygons) %>%
+  mutate(YEAR_List = NA_character_)
+```
+
+# 9. Most Common Year Assignment per Polygon
+
+```{r most-common-year}
+# Spatial join points to unioned polygons
+points_with_union <- st_join(filtered_species_points, unioned_polygons_sf, join = st_intersects)
+
+# Add polygon IDs
+unioned_polygons_sf$poly_id <- seq_len(nrow(unioned_polygons_sf))
+points_with_union$poly_id <- st_nearest_feature(filtered_species_points, unioned_polygons_sf)
+
+# Find most common JAAR for each polygon
+most_common_years <- points_with_union %>%
+  st_drop_geometry() %>%
+  group_by(poly_id, JAAR) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(poly_id) %>%
+  slice_max(order_by = count, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Merge back
+unioned_polygons_sf <- unioned_polygons_sf %>%
+  left_join(most_common_years, by = "poly_id") %>%
+  rename(Most_Common_JAAR = JAAR)
+```
+
+# 10. Spatial Join Points and Polygons; Remove Mismatches
+
+```{r filter-by-most-common-year}
+points_with_most_common <- st_join(filtered_species_points, unioned_polygons_sf)
+
+final_points <- points_with_most_common %>%
+  filter(is.na(Most_Common_JAAR) | JAAR == Most_Common_JAAR)
+```
+
+# 11. Kernel Density Estimation for Each Species: (duurt erg lang, warnings zijn voor punten met identieke coordinaten. Gezien dat hier geen foute data is mag je deze warnings negeren)
+
+```{r kernel-density}
+library(sf)
+library(terra)
+library(spatstat)
+
+# Get unique species codes
+species_list <- unique(final_points$SOORTSCODE)
+
+# Initialize empty list to store KDE rasters
+kde_results <- list()
+
+# Iterate over each species
+for (species in species_list) {
+  
+  # Filter points for the current species
+  species_pts <- final_points %>% filter(SOORTSCODE == species)
+  
+  if (nrow(species_pts) >= 20) {
+    coords <- st_coordinates(species_pts)
+    weights <- species_pts$Mediaan  # use Mediaan field for weights
+
+    window <- as.owin(st_bbox(final_points))  # same window for all species
+    ppp_obj <- ppp(x = coords[,1], y = coords[,2], window = window, marks = weights)
+
+    # Calculate weighted density
+    dens <- density(ppp_obj, weights = marks(ppp_obj), sigma = 2, eps = 1)
+
+    # Rescale to match total number of individuals
+    total_individuals <- sum(weights, na.rm = TRUE)
+    pixel_sum <- sum(dens$v, na.rm = TRUE)
+
+    if (pixel_sum > 0) {
+      dens$v <- dens$v * (total_individuals / pixel_sum)
+    }
+
+    # Convert to terra raster and store
+    kde_results[[species]] <- rast(dens)
+    
+    # Print progress
+    cat("Processed species:", species, "-", nrow(species_pts), "points\n")
+    
+  } else {
+    cat("Skipped species:", species, "- not enough points (", nrow(species_pts), ")\n")
+  }
+}
+
+```
+
+# 12. Rasterize Polygons per Species
+
+```{r rasterize-polygons}
+polygon_rasters <- map(species_list, function(species) {
+  species_poly <- filtered_plant_polygons %>% filter(SOORTSCODE == species)
+  if (nrow(species_poly) > 0) {
+    rast_out <- rasterize(vect(species_poly), reference_raster, field = "abndn_2", fun = "mean")
+    rast_out
+  } else {
+    NULL
+  }
+})
+```
+
+# 13. Combine Point and Polygon Rasters per Species
+
+```{r combine-rasters}
+
+combined_rasters <- map2(species_list, map2(kde_results, polygon_rasters, function(pt, poly) {
+  if (!is.null(pt) & !is.null(poly)) {
+    pt + poly
+  } else if (!is.null(pt)) {
+    pt
+  } else if (!is.null(poly)) {
+    poly
+  } else {
+    NULL
+  }
+}), function(species, raster_layer) {
+  if (!is.null(raster_layer)) {
+    writeRaster(raster_layer, filename = file.path(output_dir, paste0(species, "_combined.tif")), overwrite = TRUE)
+  }
+  raster_layer
+})
+```
+
+# 14. Plot an Example Raster
+
+```{r plot-example}
+first_valid <- compact(combined_rasters)[[1]]
+plot(first_valid)
+```
+
