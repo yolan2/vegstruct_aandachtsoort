@@ -11,6 +11,8 @@ library(stringr)
 library(purrr)
 library(exactextractr)
 library(spatstat)
+library(raster)
+
 terraOptions(tempdir = tempdir())
 ``` 
 
@@ -19,13 +21,21 @@ terraOptions(tempdir = tempdir())
 ```{r load-data}
 # Load actual data paths
 output_dir <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten/"
-dir.create(output_dir, showWarnings = FALSE)
+crss = " +proj=lcc +lat_0=90 +lon_0=4.36748666666667 +lat_1=49.8333339 +lat_2=51.1666672333333 +x_0=150000.01256 +y_0=5400088.4378 +ellps=intl +units=m +no_defs  "
 
-reference_raster <- rast("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/wh_vh5m.tif")
-species_points <- read.csv2("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/2025_DePanne_pnt.csv") %>%
-  st_as_sf(coords = c("X_Lambert", "Y_Lambert"), crs = "EPSG:31370") %>%
-  filter(!is.na(SOORTSCODE))
-plant_polygons <- st_read("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/PBGIS11_StageYolan/PBGIS11_StageYolan/Flora_Vlak_DePanne.shp")
+cell_size <- 5 #default celgroote voor dit project
+
+chm_ras1 = raster('wh_vh1m.tif', crs = crss)
+chm_ras1[chm_ras1 < 0] <- NA
+
+reference_raster = aggregate(chm_ras1, fun = mean, fact = cell_size/res(chm_ras1))
+species_points <- st_read("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/species_points_processed.shp")|>
+  rename(SOORTSCODE = SOORTSC)
+
+
+
+
+plant_polygons <- st_read("plant_vlakken_processed.shp")
 ```
 
 # 2. Resample Raster to Match 1m Resolution
@@ -41,21 +51,26 @@ plant_polygons <- st_transform(plant_polygons, crs(reference_raster))
 
 ```{r filter-points-polygons}
 filtered_species_points <- species_points %>%
+  mutate(JAAR = as.numeric(JAAR)) %>%
   filter(JAAR > 2014, TYPE == "Aandachtssoort")
 
 filtered_plant_polygons <- plant_polygons %>%
+  mutate(JAAR = as.numeric(JAAR)) %>%
   filter(JAAR > 2014)
+
 ```
 
 # 4. Remove Overlapping Polygons per Species
 
 ```{r remove-overlapping}
 plant_polygons_nodup <- filtered_plant_polygons %>%
+  rename(SOORTSCODE = SOORTSC) %>%       # Rename first
   group_by(SOORTSCODE) %>%
   filter(!duplicated(st_as_binary(geometry)))
+
 ```
 
-# 5. Spatial Join: Species Points with Plant Polygons
+# 5. Spatial Join: Species Points with Plant Polygons and remove points in plant_polygons
 
 ```{r spatial-join}
 joined_species <- st_join(filtered_species_points, plant_polygons_nodup, join = st_intersects)
@@ -68,10 +83,14 @@ species_points_cleaned <- joined_species %>%
 # 6. Aggregate Species Points by Year
 
 ```{r aggregate-points}
-# Buffering 20m and dissolving
 species_points_buffered <- filtered_species_points %>%
   group_by(JAAR) %>%
-  summarise(geometry = st_union(st_buffer(geometry, 20)))
+  summarise(across(everything(), first),
+            geometry = st_union(st_buffer(geometry, 20)),
+            .groups = "drop")
+
+
+
 ```
 
 # 7. Buffer Resulting Polygons (1.5 meters)
@@ -138,14 +157,16 @@ species_list <- unique(final_points$SOORTSCODE)
 
 # Initialize empty list to store KDE rasters
 kde_results <- list()
+species_list_valid = list()
 
 # Iterate over each species
 for (species in species_list) {
   
-  # Filter points for the current species
-  species_pts <- final_points %>% filter(SOORTSCODE == species)
+  species_pts <- final_points %>%
+    filter(SOORTSCODE == species, !is.na(Mediaan))  # remove NA weights
   
-  if (nrow(species_pts) >= 20) {
+  if (nrow(species_pts) >= 30) {
+    species_list_valid <- c(species_list_valid, species)
     coords <- st_coordinates(species_pts)
     weights <- species_pts$Mediaan  # use Mediaan field for weights
 
@@ -153,7 +174,7 @@ for (species in species_list) {
     ppp_obj <- ppp(x = coords[,1], y = coords[,2], window = window, marks = weights)
 
     # Calculate weighted density
-    dens <- density(ppp_obj, weights = marks(ppp_obj), sigma = 2, eps = 1)
+    dens <- density(ppp_obj, weights = marks(ppp_obj), sigma = 2, eps = 5) #standaarddeviatie van 2 zorgt voor +/-96% binnen de 5m radius
 
     # Rescale to match total number of individuals
     total_individuals <- sum(weights, na.rm = TRUE)
@@ -179,43 +200,73 @@ for (species in species_list) {
 # 12. Rasterize Polygons per Species
 
 ```{r rasterize-polygons}
-polygon_rasters <- map(species_list, function(species) {
-  species_poly <- filtered_plant_polygons %>% filter(SOORTSCODE == species)
+reference_raster <- rast(reference_raster)  # ensure it's a SpatRaster
+
+polygon_rasters <- map(species_list_valid, function(species) {
+  species_poly <- plant_polygons_nodup %>% filter(SOORTSCODE == species)
+  
   if (nrow(species_poly) > 0) {
-    rast_out <- rasterize(vect(species_poly), reference_raster, field = "abndn_2", fun = "mean")
+    rast_out <- rasterize(
+      vect(species_poly),
+      reference_raster,
+      field = "abndn_2",
+      fun = "mean"
+    )
+
+    # Multiply raster values (abundance per vierkante meter naar abundance per 5x5m)
+    rast_out <- rast_out * 25
+
     rast_out
   } else {
     NULL
   }
 })
+
 ```
 
 # 13. Combine Point and Polygon Rasters per Species
 
 ```{r combine-rasters}
 
-combined_rasters <- map2(species_list, map2(kde_results, polygon_rasters, function(pt, poly) {
-  if (!is.null(pt) & !is.null(poly)) {
-    pt + poly
-  } else if (!is.null(pt)) {
-    pt
-  } else if (!is.null(poly)) {
-    poly
-  } else {
-    NULL
+combined_rasters <- map(species_list_valid, function(species) {
+  pt <- kde_results[[species]]
+  poly <- polygon_rasters[[species]]
+  if (is.null(pt)) {
+    return(NULL)
   }
-}), function(species, raster_layer) {
-  if (!is.null(raster_layer)) {
-    writeRaster(raster_layer, filename = file.path(output_dir, paste0(species, "_combined.tif")), overwrite = TRUE)
-  }
+  else{
+
+    if (!is.null(pt)) pt <- ifel(is.na(pt), 0, pt)
+    if (!is.null(poly)) poly <- ifel(is.na(poly), 0, poly)
+  
+    if (!is.null(pt) & !is.null(poly)) {
+      raster_layer <- pt + poly
+    } else if (!is.null(pt)) {
+      raster_layer <- pt
+    } else if (!is.null(poly)) {
+      raster_layer <- poly
+    } else {
+      raster_layer <- NULL
+    }
+  
+    if (!is.null(raster_layer)) {
+      writeRaster(raster_layer,
+                  filename = file.path(output_dir, paste0(species, "_combined.tif")),
+                  overwrite = TRUE)
+    }}
+
   raster_layer
 })
+names(combined_rasters) <- species_list_valid
+
 ```
 
 # 14. Plot an Example Raster
 
 ```{r plot-example}
-first_valid <- compact(combined_rasters)[[1]]
-plot(first_valid)
+species_name <- names(compact(combined_rasters))[2]
+plot(first_valid, main = paste("Combined raster for", species_name))
+
+plot(kde_results[[species_name]])
 ```
 
