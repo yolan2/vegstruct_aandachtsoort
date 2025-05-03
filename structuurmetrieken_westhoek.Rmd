@@ -92,19 +92,37 @@ chm_clas5 = reclassify(chm_ras5, classes_chm)
 GRAZING DENSITY: Hier wordt de begrazingsdata ingeladen en geagregeerd tot op 25x25m. Een correcte filtering van deze data dient nog te gebeuren!!!
 
 ```{r}
-chm_ras25m <- aggregate(chm_ras1, fact = 25 / res(chm_ras1), fun = mean)
+library(terra)
 
+# --- Load CHM raster ---
+chm_ras1 <- rast('wh_vh1m.tif')
+crs(chm_ras1) <- crss  # indien nog niet ingesteld
+chm_ras1[chm_ras1 < 0] <- NA
+
+# --- Aggregate to 25 m resolution ---
+chm_ras25 <- aggregate(chm_ras1, fact = 25 / res(chm_ras1)[1], fun = mean)
+
+# --- Create raster template aligned with chm_ras25 ---
+template_raster <- rast(ext(chm_ras25), resolution = 25, crs = crs(chm_ras25))
+
+# --- Load and convert grazing points ---
 load("C:/Users/yolan/Dropbox/pc/Downloads/data_westhoek (3).Rdata")
 data_westhoek$x <- as.numeric(as.character(data_westhoek$x))
 data_westhoek$y <- as.numeric(as.character(data_westhoek$y))
-coordinates(data_westhoek) <- ~x + y
-proj4string(data_westhoek) <- CRS(crss)
 
-# Rasterize: count number of points per 5x5 m cell aligned with chm_ras5
-grazing_density <- rasterize(data_westhoek, chm_ras25m, fun = "count", background = 0)
+# Maak SpatVector
+data_vect <- vect(data_westhoek, geom = c("x", "y"), crs = crss)
 
-# Plot to verify
-plot(grazing_density, main = "Begrazingsdichtheid (5m raster)")
+# --- Rasterize: count number of points per 25x25 m cell ---
+grazing_density <- rasterize(data_vect, template_raster, fun = "count", background = 0)
+
+# --- Fix any NA to 0 ---
+grazing_density[is.na(grazing_density)] <- 0
+
+# --- Plot result ---
+plot(grazing_density, main = "Begrazingsdichtheid (25m raster)")
+print(grazing_density)
+
 ```
 
 MEAN HEIGHT
@@ -196,9 +214,11 @@ writeRaster(count_raster,
 Of als je slechts eentje wilt schrijven:
 ```{r}
 folder = "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/"
-writeRaster(count_raster, 
-            filename = paste0(folder, "grazing_density.tif"), 
-            format = "GTiff", 
-            overwrite = TRUE)
+writeRaster(
+  grazing_density,
+  filename = paste0(folder, "grazing_density.tif"),
+  overwrite = TRUE
+)
+
 ```
 

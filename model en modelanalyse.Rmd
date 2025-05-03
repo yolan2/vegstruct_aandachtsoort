@@ -33,7 +33,7 @@ if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 # Load CHM metrics as a named list
 chm_metrics <- list(
   #shannon = rast(file.path(input_folder, "chm_shannon.tif")),
-  mean    = rast(file.path(input_folder, "chm_mean.tif")),
+  #mean    = rast(file.path(input_folder, "chm_mean.tif"))
   #moran   = rast(file.path(input_folder, "chm_localmoran.tif")),
   #fisher  = rast(file.path(input_folder, "chm_fisher.tif")),
   #max     = rast(file.path(input_folder, "chm_max.tif")),
@@ -59,25 +59,32 @@ analyze_species <- function(path, chm_metrics) {
   species_name <- gsub("_combined.tif", "", basename(path), fixed = TRUE)
   message("Processing: ", species_name)
 
-  # Load & aggregate species raster
   ras <- rast(path)
+  crs(ras) <- crss
+  print(ras)
 
   # Mask distant zeros
   bin_ras <- ifel(ras > 0, 1, NA)
   d0      <- distance(bin_ras)
-  ras[d0 >= 40 & ras == 0] <- NA #we zijn niet heel veel met extreem veel nuldata. Dat zorgt enkel voor extra data voor het ruimtelijke model. Daarom beperken we de nulwaarnemingen tot 40m van de dichtsbijzijnde record die niet nul is.
+  ras[d0 >= 400 & ras == 0] <- NA #we zijn niet heel veel met extreem veel nuldata. Dat zorgt enkel voor extra data voor het ruimtelijke model. Daarom beperken we de nulwaarnemingen tot 40m van de dichtsbijzijnde record die niet nul is.
   ras_bin <- ifel(ras > 0, 1, 0)
+
   results <- list()
+  print(ras)
   # Loop over CHM metrics
   for (m in names(chm_metrics)) {
     message("  Metric: ", m)
+    print(paste("Class of m:", class(m)))
     if (m == "begrazing"){
-      ras_bin <- aggregate(ras_bin, fact = 5, fun = mean)
-      ras <- aggregate(ras, fact = 5, fun = mean)
+      ras_bin <- aggregate(ras_bin, fact = 5, fun = sum, na.rm = TRUE)
+      ras     <- aggregate(ras,     fact = 5, fun = sum, na.rm = TRUE)
+      ras_bin <- ifel(ras_bin > 0, 1, 0)
       
     }
       
+
     chm <- chm_metrics[[m]]
+  
 
     # Stack and clean
     print(ext(chm))
@@ -93,11 +100,45 @@ analyze_species <- function(path, chm_metrics) {
     message("neighboorhoud object berekenen")
 
     # Spatial structure
+    # Prepare spatial coordinates and neighborhood structure
     coords <- as.matrix(df[, .(x, y)])
-    nb     <- knearneigh(coords, k = 8) |> knn2nb(sym = TRUE)
-    W      <- as(nb2mat(nb, style = "B"), "sparseMatrix"); diag(W) <- 0
-    g      <- inla.read.graph(W)
+    
+    # Skip species with too few data points for spatial modeling
+    if (nrow(coords) < 30 || length(unique(df$species_binary)) < 2) {
+      warning("Skipping due to too few points or no binary variation")
+      next
+    }
+    
+    # Create neighborhood structure
+    nb <- knearneigh(coords, k = 8) |> knn2nb(sym = TRUE)
+    
+    # Check if neighborhood has isolated points
+    if (any(card(nb) == 0)) {
+      warning("Some points have no neighbors — skipping this metric")
+      next
+    }
+    
+    # Create adjacency matrix and INLA graph
+    W <- as(nb2mat(nb, style = "B"), "sparseMatrix")
+    diag(W) <- 0  # Ensure no self-loops
+    
+    if (nrow(W) != nrow(df)) {
+      warning("Mismatch between W and df rows — skipping")
+      next
+    }
+    
+    # Assign spatial ids
     df[, spatial_id := .I]
+    
+    # Create INLA graph
+    g <- inla.read.graph(W)
+    
+    print(summary(df$chm))
+    print(table(df$species_binary))
+    stopifnot(!anyNA(df$chm), !any(is.infinite(df$chm)))
+    stopifnot(length(unique(df$species_binary)) > 1)
+
+
     message("neighboorhoud object klaar")
 
     # Binary model (logistische regressie)
@@ -113,13 +154,20 @@ analyze_species <- function(path, chm_metrics) {
     dfp <- df[species > 0]
     mp  <- NULL
     if (nrow(dfp) > 0) {
+      coords_pos <- as.matrix(dfp[, .(x, y)])
+      nb_pos     <- knearneigh(coords_pos, k = 8) |> knn2nb(sym = TRUE)
+      W_pos      <- as(nb2mat(nb_pos, style = "B"), "sparseMatrix"); diag(W_pos) <- 0
+      g_pos      <- inla.read.graph(W_pos)
+      dfp[, spatial_id := .I]  # Reindex to match g_pos
+    
       mp <- inla(
-        species ~ chm + f(spatial_id, model = "besag", graph = g),
+        species ~ chm + f(spatial_id, model = "besag", graph = g_pos),
         data = dfp, family = "gamma",
         control.compute = list(dic = TRUE, waic = TRUE),
         control.predictor = list(compute = TRUE)
       )
     }
+
     message("positief model klaar")
 
     # Store
@@ -168,10 +216,11 @@ process_all_species <- function(dir, chm_metrics) {
 }
 
 # Run modeling
-#species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten/"
-species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten_test/"
+species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten/"
+#species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten_test/"
 all_results <- process_all_species(species_folder, chm_metrics)
 ```
+
 
 
 ## Visualization of positive data
@@ -264,7 +313,7 @@ binary_sig_summary_all <- bind_rows(
             Species = sp,
             Metric  = mn
           ) %>%
-          select(Species, Metric, Predictor, mean, lower90, upper90)
+          dplyr::select(Species, Metric, Predictor, mean, lower90, upper90)
         
         fe
       })
