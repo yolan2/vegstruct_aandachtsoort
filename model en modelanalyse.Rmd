@@ -66,7 +66,8 @@ analyze_species <- function(path, chm_metrics) {
   bin_ras <- ifel(ras > 0, 1, NA)
   d0 <- distance(bin_ras)
   ras[d0 >= 50 & ras == 0] <- NA
-  ras_bin <- ifel(ras > 0.1, 1, 0)
+  ras[ras < 0.5] <- 0
+  ras_bin <- ifel(ras > 1, 1, 0)
 
   results <- list()
 
@@ -77,7 +78,7 @@ analyze_species <- function(path, chm_metrics) {
     if (m == "begrazing"){
       ras_bin <- aggregate(ras_bin, fact = 5, fun = sum, na.rm = TRUE)
       ras <- aggregate(ras, fact = 5, fun = sum, na.rm = TRUE)
-      ras_bin <- ifel(ras_bin > 0.1, 1, 0)
+      ras_bin <- ifel(ras_bin > 1, 1, 0)
     }
     
 
@@ -96,8 +97,8 @@ analyze_species <- function(path, chm_metrics) {
     
         # Check for zero-only CHM values or insufficient overlap
 
-    if (sum(df$species > 0.1 & df$chm > 0) < 30) {
-      warning("Less than 30 overlapping values between species and CHM — skipping species.")
+    if (sum(df$species > 1 & df$chm > 0) < 20) {
+      warning("Less than 20 overlapping values between species and CHM — skipping species.")
       next
     }
 
