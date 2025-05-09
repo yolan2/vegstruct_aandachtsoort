@@ -61,35 +61,32 @@ analyze_species <- function(path, chm_metrics) {
 
   ras <- rast(path)
   crs(ras) <- crss
-  print(ras)
 
   # Mask distant zeros
   bin_ras <- ifel(ras > 0, 1, NA)
-  d0      <- distance(bin_ras)
-  ras[d0 >= 400 & ras == 0] <- NA #we zijn niet heel veel met extreem veel nuldata. Dat zorgt enkel voor extra data voor het ruimtelijke model. Daarom beperken we de nulwaarnemingen tot 40m van de dichtsbijzijnde record die niet nul is.
+  d0 <- distance(bin_ras)
+  ras[d0 >= 400 & ras == 0] <- NA
   ras_bin <- ifel(ras > 0, 1, 0)
 
   results <- list()
-  print(ras)
+
   # Loop over CHM metrics
   for (m in names(chm_metrics)) {
     message("  Metric: ", m)
-    print(paste("Class of m:", class(m)))
+
     if (m == "begrazing"){
       ras_bin <- aggregate(ras_bin, fact = 5, fun = sum, na.rm = TRUE)
-      ras     <- aggregate(ras,     fact = 5, fun = sum, na.rm = TRUE)
+      ras <- aggregate(ras, fact = 5, fun = sum, na.rm = TRUE)
       ras_bin <- ifel(ras_bin > 0, 1, 0)
-      
     }
-      
+    
 
     chm <- chm_metrics[[m]]
-  
+    plot(ras)
+
 
     # Stack and clean
-    print(ext(chm))
-    print(ext(ras_bin))
-    print(ext(ras))
+    message("Stacking and cleaning rasters")
     stk <- c(chm, ras_bin, ras)
     names(stk) <- c("chm", "species_binary", "species")
     vals <- terra::values(stk, dataframe = TRUE, na.rm = TRUE)
@@ -97,107 +94,83 @@ analyze_species <- function(path, chm_metrics) {
     df <- as.data.table(cbind(coords, vals))
     if (nrow(df) == 0 || sum(df$species_binary) == 0) next
     
-    message("neighboorhoud object berekenen")
+        # Check for zero-only CHM values or insufficient overlap
 
-    # Spatial structure
-    # Prepare spatial coordinates and neighborhood structure
+    if (sum(df$species > 0.1 & df$chm > 0) < 10) {
+      warning("Less than 10 overlapping values between species and CHM — skipping species.")
+      next
+    }
+
+    message("Calculating neighborhood structure")
+
+    # Adaptive Neighborhood Calculation
     coords <- as.matrix(df[, .(x, y)])
-    
-    # Skip species with too few data points for spatial modeling
-    if (nrow(coords) < 30 || length(unique(df$species_binary)) < 2) {
-      warning("Skipping due to too few points or no binary variation")
+    k <- 8
+    repeat {
+      nb <- knearneigh(coords, k = k) |> knn2nb(sym = TRUE)
+      if (all(card(nb) > 0) || k > 16) break
+      k <- k + 4
+    }
+
+    if (k > 16) {
+      warning("Failed to create connected graph — skipping this metric")
       next
     }
-    
-    # Create neighborhood structure
-    nb <- knearneigh(coords, k = 8) |> knn2nb(sym = TRUE)
-    
-    # Check if neighborhood has isolated points
-    if (any(card(nb) == 0)) {
-      warning("Some points have no neighbors — skipping this metric")
-      next
-    }
-    
-    # Create adjacency matrix and INLA graph
+
     W <- as(nb2mat(nb, style = "B"), "sparseMatrix")
-    diag(W) <- 0  # Ensure no self-loops
-    
+    diag(W) <- 0
+
     if (nrow(W) != nrow(df)) {
       warning("Mismatch between W and df rows — skipping")
       next
     }
-    
-    # Assign spatial ids
+
+    message("Creating INLA graph")
     df[, spatial_id := .I]
-    
-    # Create INLA graph
     g <- inla.read.graph(W)
-    
-    print(summary(df$chm))
-    print(table(df$species_binary))
-    stopifnot(!anyNA(df$chm), !any(is.infinite(df$chm)))
-    stopifnot(length(unique(df$species_binary)) > 1)
 
-
-    message("neighboorhoud object klaar")
-
-    # Binary model (logistische regressie)
+    message("Fitting binary model")
     mb <- inla(
       species_binary ~ chm + f(spatial_id, model = "besag", graph = g),
       data = df, family = "binomial",
-      control.compute = list(dic = TRUE, waic = TRUE),
-      control.predictor = list(compute = TRUE)
+      control.compute = list(dic = TRUE, waic = TRUE)
     )
-    message("binair model klaar")
 
-    # Positive (gamma) model
+    message("Fitting positive model")
     dfp <- df[species > 0]
-    mp  <- NULL
+    mp <- NULL
     if (nrow(dfp) > 0) {
-      coords_pos <- as.matrix(dfp[, .(x, y)])
-      nb_pos     <- knearneigh(coords_pos, k = 8) |> knn2nb(sym = TRUE)
-      W_pos      <- as(nb2mat(nb_pos, style = "B"), "sparseMatrix"); diag(W_pos) <- 0
-      g_pos      <- inla.read.graph(W_pos)
-      dfp[, spatial_id := .I]  # Reindex to match g_pos
-    
-      mp <- inla(
-        species ~ chm + f(spatial_id, model = "besag", graph = g_pos),
-        data = dfp, family = "gamma",
-        control.compute = list(dic = TRUE, waic = TRUE),
-        control.predictor = list(compute = TRUE)
-      )
+      k_pos <- 8
+      repeat {
+        coords_pos <- as.matrix(dfp[, .(x, y)])
+        nb_pos <- knearneigh(coords_pos, k = k_pos) |> knn2nb(sym = TRUE)
+        if (all(card(nb_pos) > 0) || k_pos > 16) break
+        k_pos <- k_pos + 4
+      }
+
+      if (k_pos <= 16) {
+        W_pos <- as(nb2mat(nb_pos, style = "B"), "sparseMatrix")
+        diag(W_pos) <- 0
+        g_pos <- inla.read.graph(W_pos)
+        dfp[, spatial_id := .I]
+
+        mp <- inla(
+          species ~ chm + f(spatial_id, model = "besag", graph = g_pos),
+          data = dfp, family = "gamma",
+          control.compute = list(dic = TRUE, waic = TRUE)
+        )
+      }
     }
 
-    message("positief model klaar")
-
-    # Store
+    message("Storing results")
     results[[m]] <- list(
-      binary_model   = mb,
+      binary_model = mb,
       positive_model = mp,
-      data           = df
+      data = df
     )
-    #hier combineren we de resultaten van de binary en positive model. We nemen als het ware de som van de twee modellen
-    if (!is.null(mb) && !is.null(mp)) {
-      b_bin <- mb$summary.fixed["chm", "mean"]
-      se_bin <- mb$summary.fixed["chm", "sd"]
-      b_pos <- mp$summary.fixed["chm", "mean"]
-      se_pos <- mp$summary.fixed["chm", "sd"]
-    
-      b_total <- b_bin + b_pos
-      se_total <- sqrt(se_bin^2 + se_pos^2)
-      z_comb <- b_total / se_total
-      pval_comb <- 2 * (1 - pnorm(abs(z_comb)))
-    
-      results[[m]]$combined_effect <- list(
-        mean = b_total,
-        se = se_total,
-        pval = pval_comb
-      )
-    }
   }
   return(results)
 }
-
 
 ```
 
@@ -220,6 +193,8 @@ species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aanda
 #species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten_test/"
 all_results <- process_all_species(species_folder, chm_metrics)
 ```
+
+
 
 
 
