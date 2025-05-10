@@ -20,6 +20,7 @@ library(spdep)
 library(ape)
 
 
+
 #functie voor berekenen shannon roughness
 sh <- function(x,...){
   x = table(na.omit(as.vector(x)))
@@ -124,10 +125,92 @@ plot(grazing_density, main = "Begrazingsdichtheid (25m raster)")
 print(grazing_density)
 
 ```
-
-MEAN HEIGHT
 ```{r}
-chm_mean_f = aggregate(chm_ras1, fun = mean, fact = cell_size/res(chm_ras1))
+chm_matrix <- as.matrix(chm_ras1)
+chm_ras1[chm_ras1>1] <- 1
+# Apply Gaussian blur for noise reduction
+apply_gaussian_blur <- function(mat, sigma = 1) {
+  kernel_size <- 5
+  gaussian_filter <- matrix(0, nrow = kernel_size, ncol = kernel_size)
+  center <- (kernel_size + 1) / 2
+
+  for (i in 1:kernel_size) {
+    for (j in 1:kernel_size) {
+      x <- i - center
+      y <- j - center
+      gaussian_filter[i, j] <- exp(-(x^2 + y^2) / (2 * sigma^2))
+    }
+  }
+
+  gaussian_filter <- gaussian_filter / sum(gaussian_filter)
+
+  # Apply Gaussian blur using terra::focal
+  mat_blurred <- focal(mat, w = gaussian_filter, fun = sum, na.rm = TRUE)
+  return(mat_blurred)
+}
+
+# Apply Gaussian blur
+chm_blurred <- apply_gaussian_blur(chm_ras1)
+
+# Calculate gradient magnitude (edgeness)
+grad_x <- focal(chm_blurred, w = matrix(c(-1, 0, 1, -2, 0, 2, -1, 0, 1), 3, 3))
+grad_y <- focal(chm_blurred, w = matrix(c(-1, -2, -1, 0, 0, 0, 1, 2, 1), 3, 3))
+grad_magnitude <- sqrt(grad_x^2 + grad_y^2)
+
+# Mask gradient to only focus on areas where CHM is below 0.5
+chm_edges_filtered <- mask(grad_magnitude, chm_blurred < 1)
+
+# Normalize the edges for better visualization
+chm_edges_filtered <- (chm_edges_filtered - min(chm_edges_filtered[], na.rm = TRUE)) / (max(chm_edges_filtered[], na.rm = TRUE) - min(chm_edges_filtered[], na.rm = TRUE))
+
+chm_edges_aggregated <- aggregate(chm_edges_filtered, fact = 5, fun = "mean", na.rm = FALSE)
+
+
+
+# Save the filtered edge-detected raster
+
+# Display result
+blue_yellow_palette <- colorRampPalette(c("blue", "yellow"))
+
+# Plotting with Blue to Yellow Color Scale
+plot(chm_edges_filtered, 
+     main = "Filtered CHM Gradient Edge Detection (Low to High)", 
+     col = blue_yellow_palette(100))
+
+plot(chm_ras5, 
+     main = "CHM Raster (Low to High)", 
+     col = blue_yellow_palette(100))
+
+plot(chm_edges_aggregated, 
+     main = "Aggregated CHM Gradient Edge Detection (Low to High)", 
+     col = blue_yellow_palette(100))
+
+writeRaster(chm_edges_aggregated, paste0(folder,'wh_vh1m_edges_aggregated.tif'), overwrite = TRUE)
+writeRaster(chm_edges_filtered, paste0(folder,'wh_vh1m_edges_filtered.tif'), overwrite = TRUE)
+
+```
+```{r}
+chm_matrix <- as.matrix(chm_ras1)
+
+# Calculate gradient magnitude (edgeness) without Gaussian blur
+grad_x <- focal(chm_ras1, w = matrix(c(-1, 0, 1, -2, 0, 2, -1, 0, 1), 3, 3))
+grad_y <- focal(chm_ras1, w = matrix(c(-1, -2, -1, 0, 0, 0, 1, 2, 1), 3, 3))
+grad_magnitude <- sqrt(grad_x^2 + grad_y^2)
+
+# Mask gradient to only focus on areas where CHM is below 0.5
+chm_edges_filtered <- mask(grad_magnitude, chm_ras1 < 0.5)
+
+# Normalize the edges for better visualization
+chm_edges_filtered <- (chm_edges_filtered - min(chm_edges_filtered[], na.rm = TRUE)) / (max(chm_edges_filtered[], na.rm = TRUE) - min(chm_edges_filtered[], na.rm = TRUE))
+
+
+# Display result
+plot(chm_edges_filtered, main = "Filtered CHM Gradient Edge Detection (No Blur)")
+```
+
+Wat "saaie" indices
+```{r}
+chm_mean_f = aggregate(chm_ras1, fun = "mean", fact =25)
 
 chm_min_f = aggregate(chm_ras1, fun = min, fact = cell_size/res(chm_ras1))
 
@@ -182,7 +265,11 @@ writeRaster(chm_H_class,
             overwrite = TRUE)
 
 writeRaster(chm_mean_f, 
-            filename = paste0(folder, "chm_mean.tif"), 
+            filename = paste0(folder, "chm_mean25.tif"), 
+            format = "GTiff", 
+            overwrite = TRUE)
+writeRaster(chm_ras5, 
+            filename = paste0(folder, "chm_mean5.tif"), 
             format = "GTiff", 
             overwrite = TRUE)
 
