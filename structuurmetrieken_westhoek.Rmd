@@ -101,7 +101,7 @@ crs(chm_ras1) <- crss  # indien nog niet ingesteld
 chm_ras1[chm_ras1 < 0] <- NA
 
 # --- Aggregate to 25 m resolution ---
-chm_ras25 <- aggregate(chm_ras1, fact = 25 / res(chm_ras1)[1], fun = mean)
+chm_ras25 <- aggregate(chm_ras1, fact = 25 / res(chm_ras1)[1], fun = "mean")
 
 # --- Create raster template aligned with chm_ras25 ---
 template_raster <- rast(ext(chm_ras25), resolution = 25, crs = crs(chm_ras25))
@@ -127,7 +127,7 @@ print(grazing_density)
 ```
 ```{r}
 chm_matrix <- as.matrix(chm_ras1)
-chm_ras1[chm_ras1>1] <- 1
+chm_ras1[chm_ras1>1.2] <- 1.2
 # Apply Gaussian blur for noise reduction
 apply_gaussian_blur <- function(mat, sigma = 1) {
   kernel_size <- 5

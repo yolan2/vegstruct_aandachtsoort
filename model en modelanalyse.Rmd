@@ -99,12 +99,12 @@ analyze_species_25 <- function(path, chm_metrics) {
   ras <- rast(path)
   ras <- aggregate(ras, fun = "mean", fact = 5)
   crs(ras) <- crss
+  ras[ras < 0.5] <- 0
 
   # Mask distant zeros
   bin_ras <- ifel(ras > 0, 1, NA)
   d0 <- distance(bin_ras)
   ras[d0 >= 70 & ras == 0] <- NA
-  ras[ras < 0.5] <- 0
   ras_bin <- ifel(ras > 1, 1, 0)
 
   results <- list()
@@ -209,6 +209,8 @@ analyze_species_25 <- function(path, chm_metrics) {
 
 ```
 
+TER INFO: OP 5m resolutie is er wel echt iets te veel data. Hoge kans dat je computer vastloopt.
+
 analyses van resolutie 5m
 ```{r}
 # Analyze one species: compute metrics and fit binary & positive models
@@ -217,13 +219,13 @@ analyze_species_5 <- function(path, chm_metrics) {
   message("Processing: ", species_name)
 
   ras <- rast(path)
+  ras[ras < 0.5] <- 0
   crs(ras) <- crss
 
   # Mask distant zeros
-  bin_ras <- ifel(ras > 0, 1, NA)
+  bin_ras <- ifel(ras > 0.5, 1, NA)
   d0 <- distance(bin_ras)
-  ras[d0 >= 70 & ras == 0] <- NA
-  ras[ras < 0.5] <- 0
+  ras[d0 >= 20 & ras == 0] <- NA
   ras_bin <- ifel(ras > 1, 1, 0)
 
   results <- list()
@@ -233,7 +235,6 @@ analyze_species_5 <- function(path, chm_metrics) {
     message("  Metric: ", m)
 
     chm <- chm_metrics[[m]]
-    plot(ras * 100, main = paste("Species:", species_name))
 
     # Stack and clean
     message("Stacking and cleaning rasters")
@@ -254,13 +255,7 @@ analyze_species_5 <- function(path, chm_metrics) {
 
     coords <- as.matrix(df[, .(x, y)])
     k <- 8
-    repeat {
-      nb <- knearneigh(coords, k = k) |> knn2nb(sym = TRUE)
-      if (all(card(nb) > 0) || k > 16) break
-      k <- k + 4
-    }
-
-    if (k > 16) next
+    nb <- knearneigh(coords, k = k) |> knn2nb(sym = TRUE)
 
     W <- as(nb2mat(nb, style = "B"), "sparseMatrix")
     diag(W) <- 0
