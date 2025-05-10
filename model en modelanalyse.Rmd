@@ -225,7 +225,7 @@ analyze_species_5 <- function(path, chm_metrics) {
   # Mask distant zeros
   bin_ras <- ifel(ras > 0.5, 1, NA)
   d0 <- distance(bin_ras)
-  ras[d0 >= 20 & ras == 0] <- NA
+  ras[d0 >= 0 & ras == 0] <- NA
   ras_bin <- ifel(ras > 1, 1, 0)
 
   results <- list()
@@ -350,53 +350,93 @@ all_results <- process_all_species(species_folder, chm_metrics)
 
 ## Visualization of positive data
 ```{r run_all}
-# Assume 'all_results' is already loaded from process_all_species()
+library(dplyr)
+library(ggplot2)
+library(tibble)
 
-# Loop over each species
+# Function to plot and save the gamma model
+plot_gamma_model <- function(sp, mn, model, plot_dir) {
+  cat("✅ Plotting model for:", sp, mn, "\n")
+  
+  # Extract model coefficients
+  b0 <- model$summary.fixed["(Intercept)", "mean"]
+  b1 <- model$summary.fixed[2, "mean"]  # Second coefficient is the main variable
+  prec <- model$summary.hyperpar[1, "mean"]
+  
+  cat("✅ Model coefficients: Intercept =", b0, " | Slope =", b1, " | Precision =", prec, "\n")
+  
+  # Generate the grid for prediction (adjust range as needed)
+  grid <- seq(0, 10, length.out = 100)  # Adjust the range as needed for your variable
+  
+  # Calculate predictions and confidence intervals
+  linp <- b0 + b1 * grid
+  mp <- exp(linp)
+  lo <- qgamma(0.05, shape = prec, scale = mp / prec)
+  hi <- qgamma(0.95, shape = prec, scale = mp / prec)
+  pd <- tibble(x = grid, fit = mp, lower = lo, upper = hi)
+  
+  # Calculate p-value for the model slope
+  est <- b1
+  se <- model$summary.fixed[2, "sd"]
+  z <- est / se
+  pval <- 2 * (1 - pnorm(abs(z)))
+  
+  cat("✅ Plotting model with p-value:", format.pval(pval, digits = 3), "for", sp, mn, "\n")
+  
+  # Plot the model with the model name as title
+  p2 <- ggplot(pd, aes(x = x, y = fit)) +
+    geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+    geom_line() +
+    labs(title = paste("Model:", mn), x = "Predictor (Grid)", y = "Abundance") +
+    theme_minimal() +
+    annotate(
+      "text",
+      x = max(grid),
+      y = max(mp),
+      label = paste0("p = ", format.pval(pval, digits = 2)),
+      hjust = 1, vjust = 1,
+      size = 4
+    )
+  
+  # Save the plot
+  output_path <- file.path(plot_dir, paste0(sp, "_", mn, "_gamma.png"))
+  cat("✅ Attempting to save plot at:", output_path, "\n")
+  
+  tryCatch({
+    ggsave(output_path, p2, width = 8, height = 6, dpi = 300)
+    cat("✅ Plot saved successfully at:", output_path, "\n")
+  }, error = function(e) {
+    cat("❌ Error saving plot:", e$message, "\n")
+  })
+}
+
+# Main Loop: Processing all species and all models
 for (sp in names(all_results)) {
   res <- all_results[[sp]]  # res is a list of models per metric
-
+  
+  cat("\nProcessing species:", sp, "\n")
+  
   for (mn in names(res)) {
     mr <- res[[mn]]
+    
     # Skip if no positive model
-    if (is.null(mr$positive_model)) next
-
-    # Prediction plot
-    df <- mr$data
-    var <- "chm"
-    grid <- seq(min(df[[var]]), max(df[[var]]), length.out = 100)
-    b0   <- mr$positive_model$summary.fixed["(Intercept)", "mean"]
-    b1   <- mr$positive_model$summary.fixed[var, "mean"]
-    prec <- mr$positive_model$summary.hyperpar[1, "mean"]
-    linp <- b0 + b1 * grid
-    mp   <- exp(linp)
-    lo   <- qgamma(0.05, shape = prec, scale = mp/prec)
-    hi   <- qgamma(0.95, shape = prec, scale = mp/prec)
-    pd   <- tibble(x = grid, fit = mp, lower = lo, upper = hi)
-
-    est <- b1
-    se  <- mr$positive_model$summary.fixed[var, "sd"]
-    z   <- est / se
-    pval <- 2 * (1 - pnorm(abs(z)))
-
-    p2 <- ggplot(pd, aes(x = x, y = fit)) +
-      geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
-      geom_line() +
-      geom_point(data = df[df$species > 0, ], aes(x = .data[[var]], y = species), alpha = 0.3) +
-      labs(title = paste("Gamma Fit:", sp, mn), x = var, y = "Abundance") +
-      theme_minimal() +
-      annotate(
-        "text",
-        x = max(df[[var]], na.rm = TRUE),
-        y = max(df$species, na.rm = TRUE),
-        label = paste0("p = ", format.pval(pval, digits = 2)),
-        hjust = 1, vjust = 1,
-        size = 4
-      )
-    plot(p2)
-    ggsave(file.path(plot_dir, paste0(sp, "_", mn, "_gamma.png")), p2, width = 8, height = 6, dpi = 300)
+    if (is.null(mr$positive_model)) {
+      cat("❌ Skipping", mn, "- No positive model\n")
+      next
+    }
+    
+    cat("✅ Processing model:", mn, "\n")
+    
+    # Extract the model
+    model <- mr$positive_model
+    
+    # Plot and save
+    plot_gamma_model(sp, mn, model, plot_dir)
   }
 }
+
+
+
 ```
 
 ```{r}
