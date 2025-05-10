@@ -33,7 +33,7 @@ if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 # Load CHM metrics as a named list
 chm_metrics <- list(
   #shannon = rast(file.path(input_folder, "chm_shannon.tif")),
-  #mean    = rast(file.path(input_folder, "chm_mean.tif"))
+  mean    = rast(file.path(input_folder, "chm_mean.tif")),
   #moran   = rast(file.path(input_folder, "chm_localmoran.tif")),
   #fisher  = rast(file.path(input_folder, "chm_fisher.tif")),
   #max     = rast(file.path(input_folder, "chm_max.tif")),
@@ -49,8 +49,38 @@ cell_size <- 5 #default celgroote voor dit project
 chm_ras1 = raster('wh_vh1m.tif', crs = crss)
 chm_ras1[chm_ras1 < 0] <- NA
 
-chm_ras5 = aggregate(chm_ras1, fun = mean, fact = cell_size/res(chm_ras1))
+chm_ras5 = aggregate(chm_ras1, fun = "mean", fact = cell_size/res(chm_ras1))
 ```
+
+```{r}
+# Calculate correlations between all CHM metrics
+calculate_chm_correlations <- function(chm_metrics) {
+  message("Calculating correlations between CHM metrics")
+
+  # Stack all CHM metrics into a single raster stack
+  chm_stack <- rast(chm_metrics)
+
+  # Extract values as a dataframe
+  chm_df <- as.data.frame(terra::values(chm_stack, na.rm = TRUE))
+  colnames(chm_df) <- names(chm_metrics)
+
+  # Remove any rows with NA values
+  chm_df <- chm_df[complete.cases(chm_df),]
+
+  # Calculate correlation matrix
+  cor_matrix <- cor(chm_df, method = "pearson")
+
+  # Display the correlation matrix
+  print(cor_matrix)
+
+  return(cor_matrix)
+}
+
+
+cor_matrix <- calculate_chm_correlations(chm_metrics)
+print(cor_matrix)
+```
+
 
 ## Functions: Process & Model per Species
 ```{r functions}
@@ -60,12 +90,13 @@ analyze_species <- function(path, chm_metrics) {
   message("Processing: ", species_name)
 
   ras <- rast(path)
+  ras <- aggregate(ras, fun = "mean", fact = 5)
   crs(ras) <- crss
 
   # Mask distant zeros
   bin_ras <- ifel(ras > 0, 1, NA)
   d0 <- distance(bin_ras)
-  ras[d0 >= 50 & ras == 0] <- NA
+  ras[d0 >= 70 & ras == 0] <- NA
   ras[ras < 0.5] <- 0
   ras_bin <- ifel(ras > 1, 1, 0)
 
@@ -75,16 +106,8 @@ analyze_species <- function(path, chm_metrics) {
   for (m in names(chm_metrics)) {
     message("  Metric: ", m)
 
-    if (m == "begrazing"){
-      ras_bin <- aggregate(ras_bin, fact = 5, fun = sum, na.rm = TRUE)
-      ras <- aggregate(ras, fact = 5, fun = sum, na.rm = TRUE)
-      ras_bin <- ifel(ras_bin > 1, 1, 0)
-    }
-    
-
     chm <- chm_metrics[[m]]
     plot(ras * 100, main = paste("Species:", species_name))
-
 
     # Stack and clean
     message("Stacking and cleaning rasters")
@@ -93,9 +116,8 @@ analyze_species <- function(path, chm_metrics) {
     vals <- terra::values(stk, dataframe = TRUE, na.rm = TRUE)
     coords <- terra::xyFromCell(stk, which(!is.na(vals[[1]])))
     df <- as.data.table(cbind(coords, vals))
+
     if (nrow(df) == 0 || sum(df$species_binary) == 0) next
-    
-        # Check for zero-only CHM values or insufficient overlap
 
     if (sum(df$species > 1 & df$chm > 0) < 20) {
       warning("Less than 20 overlapping values between species and CHM — skipping species.")
@@ -104,7 +126,6 @@ analyze_species <- function(path, chm_metrics) {
 
     message("Calculating neighborhood structure")
 
-    # Adaptive Neighborhood Calculation
     coords <- as.matrix(df[, .(x, y)])
     k <- 8
     repeat {
@@ -113,18 +134,12 @@ analyze_species <- function(path, chm_metrics) {
       k <- k + 4
     }
 
-    if (k > 16) {
-      warning("Failed to create connected graph — skipping this metric")
-      next
-    }
+    if (k > 16) next
 
     W <- as(nb2mat(nb, style = "B"), "sparseMatrix")
     diag(W) <- 0
 
-    if (nrow(W) != nrow(df)) {
-      warning("Mismatch between W and df rows — skipping")
-      next
-    }
+    if (nrow(W) != nrow(df)) next
 
     message("Creating INLA graph")
     df[, spatial_id := .I]
@@ -141,35 +156,47 @@ analyze_species <- function(path, chm_metrics) {
     dfp <- df[species > 0]
     mp <- NULL
     if (nrow(dfp) > 0) {
-      k_pos <- 8
-      repeat {
-        coords_pos <- as.matrix(dfp[, .(x, y)])
-        nb_pos <- knearneigh(coords_pos, k = k_pos) |> knn2nb(sym = TRUE)
-        if (all(card(nb_pos) > 0) || k_pos > 16) break
-        k_pos <- k_pos + 4
-      }
-
-      if (k_pos <= 16) {
-        W_pos <- as(nb2mat(nb_pos, style = "B"), "sparseMatrix")
-        diag(W_pos) <- 0
-        g_pos <- inla.read.graph(W_pos)
-        dfp[, spatial_id := .I]
-
-        mp <- inla(
-          species ~ chm + f(spatial_id, model = "besag", graph = g_pos),
-          data = dfp, family = "gamma",
-          control.compute = list(dic = TRUE, waic = TRUE)
-        )
-      }
+      mp <- inla(
+        species ~ chm + f(spatial_id, model = "besag", graph = g),
+        data = dfp, family = "gamma",
+        control.compute = list(dic = TRUE, waic = TRUE)
+      )
     }
 
-    message("Storing results")
-    results[[m]] <- list(
-      binary_model = mb,
-      positive_model = mp,
-      data = df
+    results[[m]] <- list(binary_model = mb, positive_model = mp)
+  }
+
+  # Full Model with all CHM metrics (outside loop)
+  message("Fitting full model with all CHM metrics")
+  full_stk <- rast(chm_metrics)
+  full_stk <- c(full_stk, ras_bin, ras)
+  names(full_stk) <- c(names(chm_metrics), "species_binary", "species")
+
+  full_vals <- terra::values(full_stk, dataframe = TRUE, na.rm = TRUE)
+  full_df <- as.data.table(full_vals)
+
+  chm_formula <- paste(names(chm_metrics), collapse = " + ")
+
+  mb_full <- inla(
+    as.formula(paste("species_binary ~", chm_formula)),
+    data = full_df, 
+    family = "binomial",
+    control.compute = list(dic = TRUE, waic = TRUE)
+  )
+
+  dfp_full <- full_df[species > 0]
+  mp_full <- NULL
+  if (nrow(dfp_full) > 0) {
+    mp_full <- inla(
+      as.formula(paste("species ~", chm_formula)),
+      data = dfp_full, 
+      family = "gamma",
+      control.compute = list(dic = TRUE, waic = TRUE)
     )
   }
+
+  results$full_model <- list(binary_model_full = mb_full, positive_model_full = mp_full)
+
   return(results)
 }
 
@@ -194,7 +221,6 @@ species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aanda
 #species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten_test/"
 all_results <- process_all_species(species_folder, chm_metrics)
 ```
-
 
 
 
