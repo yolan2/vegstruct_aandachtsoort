@@ -89,8 +89,20 @@ chm_clas5 = reclassify(chm_ras5, classes_chm)
 
 
 ```
+als je gdrive nog niet geauthenticeerd is ga je hier vastlopen. Run dan even drive_auth() in je console en probeer opnieuw.
 
-GRAZING DENSITY: Hier wordt de begrazingsdata ingeladen en geagregeerd tot op 25x25m. Een correcte filtering van deze data dient nog te gebeuren!!!
+```{r}
+tmp_begrazing <- tempfile(fileext = ".RData")
+drive_download(
+  as_id("14gUaFIpvGHy9dYht9vwvEbvPyUbxAQXl"),
+  path      = tmp_begrazing,
+  overwrite = TRUE
+)
+load(tmp_begrazing)
+```
+
+
+GRAZING DENSITY: Hier wordt de begrazingsdata geagregeerd tot op 25x25m. Een correcte filtering van deze data dient nog te gebeuren!!!
 
 ```{r}
 library(terra)
@@ -106,8 +118,7 @@ chm_ras25 <- aggregate(chm_ras1, fact = 25 / res(chm_ras1)[1], fun = "mean")
 # --- Create raster template aligned with chm_ras25 ---
 template_raster <- rast(ext(chm_ras25), resolution = 25, crs = crs(chm_ras25))
 
-# --- Load and convert grazing points ---
-load("C:/Users/yolan/Dropbox/pc/Downloads/data_westhoek (3).Rdata")
+
 data_westhoek$x <- as.numeric(as.character(data_westhoek$x))
 data_westhoek$y <- as.numeric(as.character(data_westhoek$y))
 
