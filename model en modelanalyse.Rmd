@@ -43,13 +43,14 @@ chm_metrics_25 <- list(
 
 chm_metrics_5 <- list(
   #shannon = rast(file.path(input_folder, "chm_shannon.tif")),
-  mean    = rast(file.path(input_folder, "chm_mean5.tif")),
+  mean    = rast(file.path(input_folder, "chm_ras5.tif")),
   #moran   = rast(file.path(input_folder, "chm_localmoran.tif")),
   #fisher  = rast(file.path(input_folder, "chm_fisher.tif")),
   #max     = rast(file.path(input_folder, "chm_max.tif")),
   #min     = rast(file.path(input_folder, "chm_min.tif")),
   #edgness_quant = rast(file.path(input_folder, "wh_vh1m_edges_quantile.tif")),
-  edgness_avg = rast(file.path(input_folder, "wh_vh1m_edges_aggregated.tif"))
+  #edgness_avg = rast(file.path(input_folder, "wh_vh1m_edges_aggregated.tif")),
+  edgness_2 = rast(file.path(input_folder, "wh_vh1m_edges_filtered.tif"))
 )
 
 crss = " +proj=lcc +lat_0=90 +lon_0=4.36748666666667 +lat_1=49.8333339 +lat_2=51.1666672333333 +x_0=150000.01256 +y_0=5400088.4378 +ellps=intl +units=m +no_defs  "
@@ -453,40 +454,36 @@ for (sp in names(all_results)) {
 ```
 Results of binary data. 
 ```{r}
-
 library(dplyr)
 library(tibble)
 library(knitr)
 
-
-# For each species file, run analyze_species() and pull significant binary predictors
-species_files <- list.files(species_folder)
 binary_sig_summary_all <- bind_rows(
   lapply(species_files, function(f) {
     sp  <- sub("_combined_final_raster.tif", "", basename(f), fixed = TRUE)
     res <- all_results[[sp]]
     print(sp)
-    
-    # For each metric in that species, extract binary_model fixed effects
+
     bind_rows(
       lapply(names(res), function(mn) {
         bm <- res[[mn]]$binary_model
         if (is.null(bm)) return(NULL)
-        
-        fe <- as.data.frame(bm$summary.fixed) %>%
+
+        as.data.frame(bm$summary.fixed) %>%
           rownames_to_column("Predictor") %>%
           rename(
             mean    = mean,
+            sd      = sd,
             lower90 = `0.025quant`,
             upper90 = `0.975quant`
           ) %>%
           mutate(
             Species = sp,
-            Metric  = mn
+            Metric  = mn,
+            # two‐sided p‐value from Gaussian approx
+            p.value = 2 * (1 - pnorm(abs(mean / sd)))
           ) %>%
-          dplyr::select(Species, Metric, Predictor, mean, lower90, upper90)
-        
-        fe
+          select(Species, Metric, Predictor, mean, sd, p.value, lower90, upper90)
       })
     )
   })
@@ -496,11 +493,12 @@ binary_sig_summary_all <- bind_rows(
 if (nrow(binary_sig_summary_all) > 0) {
   kable(
     binary_sig_summary_all,
-    caption = "Significant Binary‐Model Predictors by Species and Metric"
+    caption = "Binary‐Model Fixed Effects (with p-values)"
   )
 } else {
-  cat("No significant binary‐model predictors found across any species.\n")
+  cat("No binary‐model predictors found across any species.\n")
 }
+
 
 ```
 
@@ -515,77 +513,89 @@ write.csv2(df_results, csv_file, row.names = FALSE)
 cat("Written:", csv_file, "\n")
 ```
 Hier combineren we het logistische (binaire) model en het gaussiaanse model. We nemen als het ware de som van de twee modellen.
+
+
 ```{r}
-for (sp in names(all_results)) {
-  res <- all_results[[sp]]
+library(dplyr)
+library(purrr)
+library(knitr)
 
-  for (mn in names(res)) {
-    mr <- res[[mn]]
-    if (is.null(mr$combined_effect)) next
-
-    df <- mr$data
-    var <- "chm"
-    grid <- seq(min(df[[var]]), max(df[[var]]), length.out = 100)
-
-    b <- mr$combined_effect$mean
-    se <- mr$combined_effect$se
-    z <- b / se
-    pval <- mr$combined_effect$pval
-
-    y <- exp(b * grid)  # transform to expected abundance
-
-    pd <- tibble(x = grid, fit = y)
-
-    p_comb <- ggplot(pd, aes(x = x, y = fit)) +
-      geom_line() +
-      geom_point(data = df[df$species > 0, ], aes(x = .data[[var]], y = species), alpha = 0.3) +
-      labs(
-        title = paste("Combined Effect (Binary + Gamma):", sp, mn),
-        x = var, y = "Expected abundance (unscaled)"
-      ) +
-      annotate(
-        "text",
-        x = max(df[[var]], na.rm = TRUE),
-        y = max(df$species, na.rm = TRUE),
-        label = paste0("p = ", format.pval(pval, digits = 2)),
-        hjust = 1, vjust = 1,
-        size = 4
-      ) +
-      theme_minimal()
-
-    plot(p_comb)
-
-    ggsave(file.path(plot_dir, paste0(sp, "_", mn, "_combined_effect.png")), p_comb, width = 8, height = 6, dpi = 300)
-  }
+# 0) Helper to extract summary.fixed as a named tibble:
+get_fixed <- function(model) {
+  as.data.frame(model$summary.fixed) %>%
+    rownames_to_column("Predictor") %>%
+    rename(
+      mean = mean,
+      sd   = sd
+    ) %>%
+    # drop intercept here so it never appears
+    filter(Predictor != "(Intercept)")
 }
+
+# 1) Compute and store combined effects for each predictor
+all_results <- map(all_results, function(res_sp) {
+  map(res_sp, function(mr) {
+    bm <- mr$binary_model
+    gm <- mr$positive_model
+    if (!is.null(bm) && !is.null(gm)) {
+      fb <- get_fixed(bm)
+      fg <- get_fixed(gm)
+      # inner join on Predictor to keep only those in both models
+      fb %>%
+        inner_join(fg, by = "Predictor", suffix = c(".bin", ".gam")) %>%
+        transmute(
+          Predictor,
+          mean  = mean.bin + mean.gam,
+          sd    = sqrt(sd.bin^2 + sd.gam^2),
+          pval  = 2 * (1 - pnorm(abs((mean.bin + mean.gam) / sd)))
+        ) -> ce_tbl
+      
+      # store as list of lists
+      mr$combined_effect <- ce_tbl
+    }
+    mr
+  })
+})
+
+# 2) Build a long summary tibble
+combined_summary <- map_dfr(
+  names(all_results),
+  function(sp) {
+    map_dfr(
+      names(all_results[[sp]]),
+      function(mn) {
+        ce <- all_results[[sp]][[mn]]$combined_effect
+        if (is.null(ce) || nrow(ce) == 0) return(NULL)
+        ce %>%
+          mutate(Species = sp, Metric = mn) %>%
+          select(Species, Metric, Predictor, mean, sd, pval)
+      }
+    )
+  }
+)
+
+# 3) Print
+if (nrow(combined_summary) > 0) {
+  kable(
+    combined_summary,
+    caption = "Combined (Logistic+Positive) Effects per Predictor (Intercept Excluded)"
+  )
+} else {
+  cat("No common predictors found in both models for any species/metric.\n")
+}
+
 
 ```
 
+
 ```{r}
-combined_summary <- bind_rows(
-  lapply(names(all_results), function(sp) {
-    res <- all_results[[sp]]
-    bind_rows(
-      lapply(names(res), function(mn) {
-        ce <- res[[mn]]$combined_effect
-        if (is.null(ce)) return(NULL)
-        tibble(
-          Species = sp,
-          Metric = mn,
-          Mean = ce$mean,
-          SE = ce$se,
-          Pval = ce$pval
-        )
-      })
-    )
-  })
-)
+df_results <- as.data.frame(combined_summary)
 
-# Show as nice table
-kable(
-  combined_summary,
-  caption = "Combined Effect (Binary + Positive Model) by Species and Metric"
-)
+# inspect
+print(head(df_results))
 
+csv_file <- file.path(plot_dir, "combined_summary_all.csv")
+write.csv2(df_results, csv_file, row.names = FALSE)
+cat("Written:", csv_file, "\n")
 ```
 
