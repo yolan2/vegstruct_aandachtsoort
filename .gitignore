@@ -1,0 +1,13 @@
+# 1) Ignore everything
+*
+
+# 2) Except R Markdown and README files
+!*.Rmd
+!README*
+!.gitignore
+
+# 3) Ignore RStudio and R session artifacts
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
