@@ -6,7 +6,7 @@ output: html_document
 ---
 
 ```{r}
-wd <- ("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/")
+wd <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/"
 setwd(wd)
 ```
 ############
@@ -196,28 +196,10 @@ plot(chm_edges_aggregated,
      main = "Aggregated CHM Gradient Edge Detection (Low to High)", 
      col = blue_yellow_palette(100))
 
-writeRaster(chm_edges_aggregated, paste0(folder,'wh_vh1m_edges_aggregated.tif'), overwrite = TRUE)
-writeRaster(chm_edges_filtered, paste0(folder,'wh_vh1m_edges_filtered.tif'), overwrite = TRUE)
+
 
 ```
-```{r}
-chm_matrix <- as.matrix(chm_ras1)
 
-# Calculate gradient magnitude (edgeness) without Gaussian blur
-grad_x <- focal(chm_ras1, w = matrix(c(-1, 0, 1, -2, 0, 2, -1, 0, 1), 3, 3))
-grad_y <- focal(chm_ras1, w = matrix(c(-1, -2, -1, 0, 0, 0, 1, 2, 1), 3, 3))
-grad_magnitude <- sqrt(grad_x^2 + grad_y^2)
-
-# Mask gradient to only focus on areas where CHM is below 0.5
-chm_edges_filtered <- mask(grad_magnitude, chm_ras1 < 0.5)
-
-# Normalize the edges for better visualization
-chm_edges_filtered <- (chm_edges_filtered - min(chm_edges_filtered[], na.rm = TRUE)) / (max(chm_edges_filtered[], na.rm = TRUE) - min(chm_edges_filtered[], na.rm = TRUE))
-
-
-# Display result
-plot(chm_edges_filtered, main = "Filtered CHM Gradient Edge Detection (No Blur)")
-```
 
 Wat "saaie" indices
 ```{r}
@@ -236,12 +218,6 @@ chm_var = aggregate(chm_ras1, fact = cell_size/res(chm_ras1), fun = sd, na.rm = 
 
 ```
 
-DISTRIBUTION
-```{r}
-#Verticale heterogeniteit via Variantie AGGREGATED 0.25x0.25
-chm_fish = aggregate(chm_ras1, fact = cell_size/res(chm_ras1), fun = skewness, na.rm = T) 
-
-```
 
 MORAN: Horizontale heterogeniteit via Morans I MOVING WINDOW
 #omdat morans I wat meer moeite heeft met NO data values gaan we hier wat minder streng zijn rond NA waardes toekennen. Daarom laden we terug het originele bestand in. (chm_ras1_moran). Ook zal de warning subgraphs verschijnen. Dit gebeurt voor 5 cellen in het raster. Concreet wil dat zeggen dat er één of meerdere cellen geisoleerd zijn geraakt en dus geen buren hebben. De grootste cluster verbonden cellen wordt behouden en wordt gebruikt voor morans i. 
@@ -254,15 +230,6 @@ chm_locm_ras = aggregate(chm_ras1_moran, fun = moran_i, fact = 10/res(chm_ras1))
 plot(chm_locm_ras)
 ```
 
-SHANNON
-```{r}
-#Verticale heterogeniteit via Shannon
-classes_df = c(-Inf,0.5, 1,0.5,2,3,2,Inf,3)
-classes_chm = matrix(classes_df,ncol = 3, byrow=T)
-chm_clas1 = reclassify(chm_ras1, classes_chm)
-chm_H_class = aggregate(chm_clas1, fact = cell_size/res(chm_clas1), sh)
-```
-
 
 
 WRITE RASTERS
@@ -270,43 +237,35 @@ WRITE RASTERS
 folder = "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/"
 
 
-writeRaster(chm_H_class, 
-            filename = paste0(folder, "chm_shannon.tif"), 
-            format = "GTiff", 
-            overwrite = TRUE)
-
 writeRaster(chm_mean_f, 
             filename = paste0(folder, "chm_mean25.tif"), 
-            format = "GTiff", 
+            filetype = "GTiff", 
             overwrite = TRUE)
 writeRaster(chm_ras5, 
             filename = paste0(folder, "chm_mean5.tif"), 
-            format = "GTiff", 
+            filetype = "GTiff", 
             overwrite = TRUE)
 
 writeRaster(chm_locm_ras, 
             filename = paste0(folder, "chm_localmoran.tif"), 
-            format = "GTiff", 
-            overwrite = TRUE)
-
-writeRaster(chm_fish, 
-            filename = paste0(folder, "chm_fisher.tif"), 
-            format = "GTiff", 
+            filetype = "GTiff", 
             overwrite = TRUE)
 
 writeRaster(chm_max_f, 
             filename = paste0(folder, "chm_max.tif"), 
-            format = "GTiff", 
+            filetype = "GTiff", 
             overwrite = TRUE)
 
 writeRaster(chm_min_f, 
             filename = paste0(folder, "chm_min.tif"), 
-            format = "GTiff", 
+            filetype = "GTiff", 
             overwrite = TRUE)
 writeRaster(count_raster, 
             filename = paste0(folder, "grazing_density.tif"), 
-            format = "GTiff", 
+            filetype = "GTiff", 
             overwrite = TRUE)
+writeRaster(chm_edges_aggregated, paste0(folder,'wh_vh1m_edges_aggregated.tif'), overwrite = TRUE)
+writeRaster(chm_edges_filtered, paste0(folder,'wh_vh1m_edges_filtered.tif'), overwrite = TRUE)
 ```
 
 Of als je slechts eentje wilt schrijven:

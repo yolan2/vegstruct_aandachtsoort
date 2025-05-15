@@ -58,6 +58,7 @@ cell_size <- 5 #default celgroote voor dit project
 
 chm_ras1 = raster('wh_vh1m.tif', crs = crss)
 chm_ras1[chm_ras1 < 0] <- NA
+chm_ras1[chm_ras1 > 1.5] <- NA
 
 chm_ras5 = aggregate(chm_ras1, fun = "mean", fact = cell_size/res(chm_ras1))
 ```
@@ -209,7 +210,7 @@ analyze_species_25 <- function(path, chm_metrics) {
 
 ```
 
-TER INFO: OP 5m resolutie is er wel echt iets te veel data. Hoge kans dat je computer vastloopt.
+TER INFO: OP 5m resolutie is er wel veel data. Hoge kans dat je computer vastloopt.
 
 analyses van resolutie 5m
 ```{r}
@@ -235,6 +236,8 @@ analyze_species_5 <- function(path, chm_metrics) {
     message("  Metric: ", m)
 
     chm <- chm_metrics[[m]]
+    print(chm)
+    print(ras_bin)
 
     # Stack and clean
     message("Stacking and cleaning rasters")
@@ -325,6 +328,8 @@ analyze_species_5 <- function(path, chm_metrics) {
 
 Hier kan je het model eindelijk runnen. Dit is echter het zwaarste stuk van heel het project. Doe dit dus niet zomaar! Om tijd te besparen kan je de test data (alternatieve species_folder) gebruiken. Hier gebruik je dan een suset van de data.
 
+Merk op: full model runt twee keer per soort, mar heb nu even geen zin om die onnodige computerkracht te fiksen.
+
 ```{r process_all, message=TRUE, warning=TRUE}
 # Apply analyze_species across all TIFF files
 chm_metrics <- chm_metrics_5 #kies 5 (m) of 25  (m) resolutie
@@ -334,6 +339,7 @@ process_all_species <- function(dir, chm_metrics) {
   tif <- all[endsWith(all, "_combined.tif")]
   out <- list()
   for (f in tif) {
+    print(rast(f))
     out[[basename(f)]] <- analyze_species_5(f, chm_metrics)#kies opnieuw 5 (m) of 25  (m) resolutie
   }
   return(out)

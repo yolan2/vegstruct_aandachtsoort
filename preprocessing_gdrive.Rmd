@@ -115,12 +115,28 @@ drive_download(
   overwrite = TRUE
 )
 
-tmp_dir <- tempfile()
-dir.create(tmp_dir)
-unzip(tmp_zip, exdir = tmp_dir)
+# 1. Make sure sf is loaded
+library(sf)
 
-shp_files <- list.files(tmp_dir, pattern = "\\.shp$", full.names = TRUE)
-polygon_data <- st_read(shp_files[1])
+# 2. Inspect what actually got unzipped
+file_list <- list.files(tmp_dir, recursive = TRUE)
+print(file_list)
+
+# 3. Now pick out shapefiles in any sub-folder
+shp_files <- list.files(tmp_dir, pattern = "\\.shp$", full.names = TRUE, recursive = TRUE)
+print(shp_files)
+
+# 4. If you now see one or more .shp paths, read the first one:
+if (length(shp_files) == 0) {
+  stop("No .shp files found under ", tmp_dir)
+} else {
+  polygon_data <- st_read(shp_files[1])
+}
+
+# 5. (Optional) Check its CRS / geometry
+st_crs(polygon_data)
+plot(polygon_data["geometry"])
+
 ```
 
 # 8. Data Processing & Export
@@ -128,21 +144,17 @@ polygon_data <- st_read(shp_files[1])
 ```{r data-processing}
 species_points <- species_points |>
   left_join(lookup_table, by = c("ABUND" = "Code"))
-
 r_ext <- st_as_sf(as(extent(canopy_height_1m), "SpatialPolygons"))
 st_crs(r_ext) <- st_crs(species_points)
 species_points <- species_points[st_intersects(species_points, r_ext, sparse=FALSE), ]
 
-st_write(
+sf::st_write(
   species_points,
-  "species_points_processed.shp",
-  row.names = FALSE,
-  append    = FALSE
+  "species_points_processed.gpkg",
+  layer        = "species_points_processed",
+  delete_layer = TRUE
 )
 
-polygon_data <- polygon_data |>
-  left_join(lookup_table, by = c("ABUNDANTIE" = "Code")) |>
-  mutate(abundance_m2 = Mediaan / Shape_Area)
 
 st_crs(r_ext) <- st_crs(polygon_data)
 polygon_data <- polygon_data[st_intersects(polygon_data, r_ext, sparse=FALSE), ]

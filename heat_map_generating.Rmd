@@ -29,8 +29,7 @@ chm_ras1 = raster('wh_vh1m.tif', crs = crss)
 chm_ras1[chm_ras1 < 0] <- NA
 
 reference_raster = aggregate(chm_ras1, fun = mean, fact = cell_size/res(chm_ras1))
-species_points <- st_read("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/species_points_processed.shp")|>
-  rename(SOORTSCODE = SOORTSC)
+species_points <- st_read("species_points_processed.gpkg")
 
 
 
@@ -73,23 +72,49 @@ plant_polygons_nodup <- filtered_plant_polygons %>%
 # 5. Spatial Join: Species Points with Plant Polygons and remove points in plant_polygons
 
 ```{r spatial-join}
-joined_species <- st_join(filtered_species_points, plant_polygons_nodup, join = st_intersects)
 
-# Remove points with same SOORTSCODE
-species_points_cleaned <- joined_species %>%
-  filter(is.na(SOORTSCODE.y) | SOORTSCODE.x != SOORTSCODE.y)
+library(sf)
+
+# 1) compute the intersections: for each point, which polygon indices it intersects?
+ints <- st_intersects(filtered_species_points, plant_polygons_nodup)
+
+# 2) build a logical keep‐vector: TRUE if
+#    • the point hits no polygons at all, OR
+#    • none of the intersected polygons has the same SOORTSCODE
+keep <- mapply(function(pt_code, poly_i){
+  if (length(poly_i) == 0) {
+    # point falls in no polygon → keep it
+    return(TRUE)
+  }
+  # get the polygon codes for the ones it does hit
+  poly_codes <- plant_polygons_nodup$SOORTSCODE[poly_i]
+  # keep only if *none* match
+  !any(poly_codes == pt_code, na.rm = TRUE)
+},
+filtered_species_points$SOORTSCODE,
+ints)
+
+# 3) subset your original sf object
+species_points_cleaned <- filtered_species_points[keep, ]
+
 ```
 
-# 6. Aggregate Species Points by Year
+# 6. Aggregate Species Points by Year; hier gaan in essentie kijken waar er gekarteerd is. Dit door20m buffers te trekken rond elk punt van elk jaar en die allemaal te mergen.
 
 ```{r aggregate-points}
+filtered_species_points <- filtered_species_points %>%
+  st_set_geometry("geom")
+
+# 2) buffer by 20m and union per JAAR, keeping only the original columns
 species_points_buffered <- filtered_species_points %>%
   group_by(JAAR) %>%
-  summarise(across(everything(), first),
-            geometry = st_union(st_buffer(geometry, 20)),
-            .groups = "drop")
-
-
+  summarise(
+    # copy the first value of every attribute except the geometry
+    across(.cols = -geom, .fns = first),
+    # now buffer the true geometry and union it
+    geom = st_union(st_buffer(geom, 20)),
+    .groups = "drop"
+  )
 
 ```
 
@@ -159,7 +184,7 @@ species_list <- unique(final_points$SOORTSCODE)
 kde_results <- list()
 species_list_valid = list()
 
-chm_ras5 = raster("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/chm_mean.tif")
+chm_ras5 = raster("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/chm_mean5.tif")
 # Iterate over each species
 for (species in species_list) {
   
@@ -260,7 +285,7 @@ polygon_rasters <- map(species_list_valid, function(species) {
 
 ```
 
-# 13. Combine Point and Polygon Rasters per Species
+# 13. Combine Point and Polygon Rasters per Species and write file
 
 ```{r combine-rasters}
 
