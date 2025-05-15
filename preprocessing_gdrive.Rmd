@@ -29,7 +29,7 @@ library(googlesheets4)
 library(googledrive)
 ```
 
-# 2. Kies hier je werkmap en typ 1 om authenticatie te starten (er komen rare dingen in je console) test
+# 2. Kies hier je werkmap en typ 1 om authenticatie te starten of 2 als je al verbonden bent
 
 ```{r wd-and-auth}
 setwd("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/")
