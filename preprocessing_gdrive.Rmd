@@ -92,18 +92,6 @@ species_points <- read_excel(tmp_sp) |>
   st_transform(crs = st_crs(canopy_height_1m))
 ```
 
-# 6. Lookup Table
-
-```{r lookup-table}
-tmp_lookup <- tempfile(fileext = ".xlsx")
-drive_download(
-  as_id("1-hlCyqBvBbhOLiPWDGNZPa20i8dRq0yr"),
-  path      = tmp_lookup,
-  type      = "xlsx",
-  overwrite = TRUE
-)
-lookup_table <- read_excel(tmp_lookup, sheet = 2)
-```
 
 # 7. Polygon Data
 

@@ -136,7 +136,7 @@ analyze_species_25 <- function(path, chm_metrics) {
     message("Calculating neighborhood structure")
 
     coords <- as.matrix(df[, .(x, y)])
-    k <- 8
+    k <- 4
     repeat {
       nb <- knearneigh(coords, k = k) |> knn2nb(sym = TRUE)
       if (all(card(nb) > 0) || k > 16) break
@@ -258,7 +258,7 @@ analyze_species_5 <- function(path, chm_metrics) {
     message("Calculating neighborhood structure")
 
     coords <- as.matrix(df[, .(x, y)])
-    k <- 8
+    k <- 4
     nb <- knearneigh(coords, k = k) |> knn2nb(sym = TRUE)
 
     W <- as(nb2mat(nb, style = "B"), "sparseMatrix")
@@ -351,6 +351,39 @@ species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aanda
 #species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten_test/"
 all_results <- process_all_species(species_folder, chm_metrics)
 ```
+```{r}
+
+tmp_lookup <- tempfile(fileext = ".xlsx")
+
+# download the Google Sheet as xlsx
+drive_download(
+  as_id("1-hlCyqBvBbhOLiPWDGNZPa20i8dRq0yr"),  # your sheet’s file ID
+  path      = tmp_lookup,
+  type      = "xlsx",
+  overwrite = TRUE
+)
+
+# read the “soorten” sheet (you can also use sheet = 2 if you prefer index)
+lookup_table <- read_excel(tmp_lookup, sheet = "Soorten")
+# 2. Prepare the lookup map: names = CODE, values = NEDERLANDSENAAMLEN
+name_map <- setNames(lookup_table$NEDERLANDSENAAMLEN,
+                     lookup_table$CODE)
+
+# 3. Clean and remap all_results names
+#    a) strip “_combined.tif”
+clean_sp <- sub("_combined\\.tif$", "", names(all_results))
+
+#    b) map to Dutch names when CODE matches, otherwise keep cleaned code
+new_sp <- ifelse(
+  clean_sp %in% names(name_map),
+  name_map[clean_sp],
+  clean_sp
+)
+
+# 4. Assign the new names back
+names(all_results) <- new_sp
+species_names <- names(all_results)
+```
 
 
 
@@ -366,52 +399,48 @@ plot_gamma_model <- function(sp, mn, model, plot_dir) {
   cat("✅ Plotting model for:", sp, mn, "\n")
   
   # Extract model coefficients
-  b0 <- model$summary.fixed["(Intercept)", "mean"]
-  b1 <- model$summary.fixed[2, "mean"]  # Second coefficient is the main variable
+  b0   <- model$summary.fixed["(Intercept)", "mean"]
+  b1   <- model$summary.fixed[2, "mean"]
   prec <- model$summary.hyperpar[1, "mean"]
   
-  cat("✅ Model coefficients: Intercept =", b0, " | Slope =", b1, " | Precision =", prec, "\n")
-  
-  # Generate the grid for prediction (adjust range as needed)
-  grid <- seq(0, 10, length.out = 100)  # Adjust the range as needed for your variable
-  
-  # Calculate predictions and confidence intervals
+  # Create prediction grid
+  grid <- seq(0, 10, length.out = 100)
   linp <- b0 + b1 * grid
-  mp <- exp(linp)
-  lo <- qgamma(0.05, shape = prec, scale = mp / prec)
-  hi <- qgamma(0.95, shape = prec, scale = mp / prec)
-  pd <- tibble(x = grid, fit = mp, lower = lo, upper = hi)
+  mp   <- exp(linp)
+  lo   <- qgamma(0.05, shape = prec, scale = mp / prec)
+  hi   <- qgamma(0.95, shape = prec, scale = mp / prec)
+  pd   <- tibble(x = grid, fit = mp, lower = lo, upper = hi)
   
-  # Calculate p-value for the model slope
+  # p-value for slope
   est <- b1
-  se <- model$summary.fixed[2, "sd"]
-  z <- est / se
-  pval <- 2 * (1 - pnorm(abs(z)))
+  se  <- model$summary.fixed[2, "sd"]
+  pval <- 2 * (1 - pnorm(abs(est / se)))
   
-  cat("✅ Plotting model with p-value:", format.pval(pval, digits = 3), "for", sp, mn, "\n")
+  cat("✅ Model coefficients: Intercept =", b0,
+      "| Slope =", b1,
+      "| Precision =", prec, "\n")
+  cat("✅ Plotting model with p-value:",
+      format.pval(pval, digits = 3), "for", sp, mn, "\n")
   
-  # Plot the model with the model name as title
+  # Build the ggplot, including species name in the title
   p2 <- ggplot(pd, aes(x = x, y = fit)) +
     geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
     geom_line() +
-    labs(title = paste("Model:", mn), x = "Predictor (Grid)", y = "Abundance") +
-    theme_minimal() +
-    annotate(
-      "text",
-      x = max(grid),
-      y = max(mp),
-      label = paste0("p = ", format.pval(pval, digits = 2)),
-      hjust = 1, vjust = 1,
-      size = 4
-    )
+    labs(
+      title    = paste0("Species: ", sp),
+      subtitle = paste0("Model: ", mn, " (p = ", format.pval(pval, digits = 2), ")"),
+      x        = "Predictor (Grid)",
+      y        = "Abundance"
+    ) +
+    theme_minimal()
   
   # Save the plot
   output_path <- file.path(plot_dir, paste0(sp, "_", mn, "_gamma.png"))
-  cat("✅ Attempting to save plot at:", output_path, "\n")
+  cat("✅ Saving plot at:", output_path, "\n")
   
   tryCatch({
     ggsave(output_path, p2, width = 8, height = 6, dpi = 300)
-    cat("✅ Plot saved successfully at:", output_path, "\n")
+    cat("✅ Plot saved successfully\n")
   }, error = function(e) {
     cat("❌ Error saving plot:", e$message, "\n")
   })
@@ -456,40 +485,41 @@ Results of binary data.
 ```{r}
 library(dplyr)
 library(tibble)
+library(purrr)
 library(knitr)
 
-binary_sig_summary_all <- bind_rows(
-  lapply(species_files, function(f) {
-    sp  <- sub("_combined_final_raster.tif", "", basename(f), fixed = TRUE)
+binary_sig_summary_all <- 
+  # 1) iterate over your species_names vector
+  map_dfr(species_names, function(sp) {
+    # 2) get that species’ results
     res <- all_results[[sp]]
-    print(sp)
-
-    bind_rows(
-      lapply(names(res), function(mn) {
-        bm <- res[[mn]]$binary_model
-        if (is.null(bm)) return(NULL)
-
-        as.data.frame(bm$summary.fixed) %>%
-          rownames_to_column("Predictor") %>%
-          rename(
-            mean    = mean,
-            sd      = sd,
-            lower90 = `0.025quant`,
-            upper90 = `0.975quant`
-          ) %>%
-          mutate(
-            Species = sp,
-            Metric  = mn,
-            # two‐sided p‐value from Gaussian approx
-            p.value = 2 * (1 - pnorm(abs(mean / sd)))
-          ) %>%
-          select(Species, Metric, Predictor, mean, sd, p.value, lower90, upper90)
-      })
-    )
+    if (is.null(res)) return(NULL)
+    
+    # 3) for each metric in that species
+    imap_dfr(res, function(mr, mn) {
+      bm <- mr$binary_model
+      if (is.null(bm)) return(NULL)
+      
+      # 4) extract and tidy the fixed‐effects summary
+      as.data.frame(bm$summary.fixed) %>%
+        rownames_to_column("Predictor") %>%
+        rename(
+          mean    = mean,
+          sd      = sd,
+          lower90 = `0.025quant`,
+          upper90 = `0.975quant`
+        ) %>%
+        mutate(
+          Species = sp,
+          Metric  = mn,
+          # two‐sided p‐value
+          p.value = 2 * (1 - pnorm(abs(mean / sd)))
+        ) %>%
+        select(Species, Metric, Predictor, mean, sd, p.value, lower90, upper90)
+    })
   })
-)
 
-# Print
+# 5) Print the results
 if (nrow(binary_sig_summary_all) > 0) {
   kable(
     binary_sig_summary_all,
