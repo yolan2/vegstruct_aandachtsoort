@@ -118,6 +118,16 @@ analyze_species_25 <- function(path, chm_metrics) {
   bin_ras <- ifel(ras > 0, 1, NA)    # NA beyond any non-zero
   ras_bin <- ifel(ras > 0.5, 1, 0)   # 0/1 presence
 
+  # --- estimate Box–Cox λ once for all metrics
+  all_vals <- terra::values(ras, na.rm = TRUE)
+  pos_vals <- all_vals[all_vals > 0]
+  if (length(pos_vals) < 20) {
+    stop("Too few positive species values to estimate a stable Box–Cox λ")
+  }
+  bc     <- boxcox(pos_vals ~ 1, plotit = FALSE)
+  lambda <- bc$x[which.max(bc$y)]
+  message(sprintf("  Box–Cox λ for %s = %.3f", species_name, lambda))
+
   results25 <- list()
 
   for (m in names(chm_metrics)) {
@@ -164,13 +174,7 @@ analyze_species_25 <- function(path, chm_metrics) {
     dfp <- df[species > 0]
     mp  <- NULL
     if (nrow(dfp) > 0) {
-      # find optimal λ
-      sp_df <- data.frame(y = dfp$species)
-      bc    <- boxcox(y ~ 1, data = sp_df, plotit = FALSE)
-      lambda <- bc$x[which.max(bc$y)]
-      message(sprintf("    Box–Cox λ = %.3f", lambda))
-
-      # apply transform
+      # apply the pre‐computed λ
       if (abs(lambda) < 1e-6) {
         dfp[, species_tr := log(species)]
       } else {
@@ -186,7 +190,7 @@ analyze_species_25 <- function(path, chm_metrics) {
         control.compute = list(dic=TRUE, waic=TRUE)
       )
 
-      # optional: diagnostic plot
+      # optional: diagnostic residuals
       fitted_vals <- mp$summary.fitted.values$mean
       resid_vals  <- dfp$species_tr - fitted_vals
     }
@@ -199,7 +203,6 @@ analyze_species_25 <- function(path, chm_metrics) {
 
   return(results25)
 }
-
 
 
 ```
@@ -227,9 +230,20 @@ analyze_species_5 <- function(path, chm_metrics) {
   ras[d0 >= 0 & ras == 0] <- NA
   ras_bin  <- ifel(ras > 0.5, 1, 0)
 
+  # 1) extract all positive species values once
+  all_vals <- terra::values(ras, na.rm = TRUE)
+  pos_vals <- all_vals[all_vals > 0]
+  if (length(pos_vals) < 20) {
+    stop("Too few positive species values to estimate a stable Box–Cox λ")
+  }
+
+  # 2) estimate λ once
+  bc   <- MASS::boxcox(pos_vals ~ 1, plotit = FALSE)
+  lambda <- bc$x[which.max(bc$y)]
+  message(sprintf("  Box–Cox λ for %s = %.3f", species_name, lambda))
+
   results <- list()
 
-  # Loop over CHM metrics
   for (m in names(chm_metrics)) {
     message("  Metric: ", m)
     chm <- chm_metrics[[m]]
@@ -247,7 +261,7 @@ analyze_species_5 <- function(path, chm_metrics) {
       next
     }
 
-    # Neighborhood structure
+    # spatial structure
     coords <- as.matrix(df[, .(x,y)])
     nb     <- knearneigh(coords, k = 4) |> knn2nb(sym = TRUE)
     W      <- as(nb2mat(nb, style = "B"), "sparseMatrix")
@@ -257,7 +271,7 @@ analyze_species_5 <- function(path, chm_metrics) {
     df[, spatial_id := .I]
     g <- inla.read.graph(W)
 
-    # Fitting binary model
+    # binary model
     mb <- inla(
       species_binary ~ chm + f(spatial_id, model = "besag", graph = g),
       data            = df,
@@ -265,35 +279,20 @@ analyze_species_5 <- function(path, chm_metrics) {
       control.compute = list(dic = TRUE, waic = TRUE)
     )
 
-    # Fitting positive (Box–Cox Gaussian) model
+    # positive model, reusing λ
     dfp <- df[species > 0]
-    mp  <- NULL
-    if (nrow(dfp) > 0) {
+    dfp[, species_tr := if (abs(lambda) < 1e-6) 
+                             log(species) 
+                           else 
+                             (species^lambda - 1) / lambda]
 
-      # Box–Cox transform
-      sp_df <- data.frame(y = dfp$species)
-      bc    <- boxcox(y ~ 1, data = sp_df, plotit = FALSE)
-      lambda <- bc$x[which.max(bc$y)]
-      if (abs(lambda) < 1e-6) {
-        dfp[, species_tr := log(species)]
-      } else {
-        dfp[, species_tr := (species^lambda - 1) / lambda]
-      }
-      message(sprintf("    Box–Cox λ = %.3f", lambda))
-
-      # Fit Gaussian on transformed response
-      mp <- inla(
-        species_tr ~ chm + f(spatial_id, model = "besag", graph = g),
-        data            = dfp,
-        family          = "gaussian",
-        control.family  = list(link = "identity"),
-        control.compute = list(dic = TRUE, waic = TRUE)
-      )
-
-      # Residuals vs fitted
-      fitted_vals <- mp$summary.fitted.values$mean
-      resid_vals  <- dfp$species_tr - fitted_vals
-    }
+    mp <- inla(
+      species_tr ~ chm + f(spatial_id, model = "besag", graph = g),
+      data            = dfp,
+      family          = "gaussian",
+      control.family  = list(link = "identity"),
+      control.compute = list(dic = TRUE, waic = TRUE)
+    )
 
     results[[m]] <- list(
       binary_model   = mb,
@@ -303,6 +302,7 @@ analyze_species_5 <- function(path, chm_metrics) {
 
   return(results)
 }
+
 
 ```
 
@@ -509,6 +509,15 @@ process_all_species <- function(dir, chm_metrics) {
 species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten/"
 #species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten_test/"
 all_results5 <- process_all_species(species_folder, chm_metrics)
+
+
+```
+
+```{r}
+  saveRDS(
+    all_results55,
+    file = file.path(plot_dir, paste0(sp, "_all_metrics_25_res.rds"))
+  )
 ```
 
 Hier gaan we de namen veranderen naar nederlandse namen. Kies ook opnieuw of je met de resultaten van 5m of 25m resolutie werkt.
@@ -608,6 +617,9 @@ plot_boxcox_model <- function(sp, mn, pos_res, plot_dir, x_range) {
 # assume `all_results` is a named list of species → metrics → models
 # and that .positive_model is a list(model=lambda)
 
+# Make sure chm_metrics is in scope, e.g.:
+# chm_metrics <- chm_metrics_5
+
 for (sp in names(all_results)) {
   cat("=== Species:", sp, "===\n")
   for (mn in names(all_results[[sp]])) {
@@ -616,14 +628,24 @@ for (sp in names(all_results)) {
       cat(" Skipping", mn, "- no positive model\n")
       next
     }
+    cat("✅ Metric:", mn, "\n")
+    
+    # pull the CHM raster for this metric
+    chm <- chm_metrics[[mn]]
+    # compute its min & max
+    rng <- terra::global(chm, c("min","max"), na.rm=TRUE)[1, ]
+    x_range <- c(rng["min"], rng["max"])
+    
+    # now call your existing plotting function
     plot_boxcox_model(
       sp, mn,
       pos_res = pm,
-      plot_dir = plot_dir,     # set this beforehand
-      x_range  = c(min_env, max_env)  # your CHM range
+      plot_dir = plot_dir,
+      x_range  = x_range
     )
   }
 }
+
 
 
 ```
