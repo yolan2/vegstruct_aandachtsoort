@@ -122,7 +122,8 @@ analyze_species_25 <- function(path, chm_metrics) {
   all_vals <- terra::values(ras, na.rm = TRUE)
   pos_vals <- all_vals[all_vals > 0]
   if (length(pos_vals) < 20) {
-    stop("Too few positive species values to estimate a stable Box–Cox λ")
+    warning(sprintf("Too few positive values for '%s' — skipping species.", species_name))
+    return(NULL)    # skip this species instead of aborting
   }
   bc     <- boxcox(pos_vals ~ 1, plotit = FALSE)
   lambda <- bc$x[which.max(bc$y)]
@@ -379,7 +380,7 @@ analyze_species_test <- function(path, chm_metrics) {
     dfp <- df[species > 0]
     pos_res <- list(boxcox = NULL, gamma = NULL, best = NA)
 
-    if (nrow(dfp) > 0) {
+    if (nrow(dfp) > 5) {
       # A) prepare simple df for Box–Cox
       sp_df <- data.frame(y = dfp$species)
 
@@ -424,7 +425,7 @@ analyze_species_test <- function(path, chm_metrics) {
         best   = best
       )
     } else {
-      message("    no positive values → skipping positive block")
+      message("    too few positive values → skipping positive block")
     }
 
     results[[m]] <- list(
