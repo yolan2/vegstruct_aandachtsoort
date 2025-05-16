@@ -482,14 +482,14 @@ Zorg dat je geen bestanden geopend hebt die INLA gebruikt (bijvoorbeeld de raste
 
 ```{r process_all, message=TRUE, warning=TRUE}
 # Apply analyze_species across all TIFF files
-chm_metrics <- chm_metrics_5 #kies 5 (m) of 25  (m) resolutie
+chm_metrics <- chm_metrics_25 #kies 5 (m) of 25  (m) resolutie
 
 process_all_species <- function(dir, chm_metrics) {
   all <- list.files(dir, full.names = TRUE)
   tif <- all[endsWith(all, "_combined.tif")]
   out <- list()
   for (f in tif) {
-    out[[basename(f)]] <- analyze_species_5(f, chm_metrics)#kies opnieuw 5 (m) of 25  (m) resolutie
+    out[[basename(f)]] <- analyze_species_25(f, chm_metrics)#kies opnieuw 5 (m) of 25  (m) resolutie
     gc()
   }
   return(out)
