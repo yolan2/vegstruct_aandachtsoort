@@ -109,7 +109,7 @@ GRAZING DENSITY: Hier wordt de begrazingsdata geagregeerd tot op 25x25m. Een cor
 ```{r}
 library(terra)
 
-# --- Load CHM raster ---
+# --- Load CHM raster --- (dit gebruiken we om ervoor te zorgen dat de resolutie/extent van het begrazingsraster correct is)
 chm_ras1 <- rast('wh_vh1m.tif')
 crs(chm_ras1) <- crss  # indien nog niet ingesteld
 chm_ras1[chm_ras1 < 0] <- NA
@@ -138,6 +138,80 @@ plot(grazing_density, main = "Begrazingsdichtheid (25m raster)")
 print(grazing_density)
 
 ```
+
+
+Hier gaan we nu de maandelijkse begrazingsanomalie berekenen (genormaliseerd voor hoeveelheid begrazing in die maand). 
+
+```{r}
+
+# --- preparatory steps (as before) ---
+chm_ras1 <- rast('wh_vh1m.tif')
+crs(chm_ras1) <- crss
+
+chm_ras25 <- aggregate(chm_ras1, fact = 25 / res(chm_ras1)[1], fun = "mean")
+template_raster <- rast(ext(chm_ras25), resolution = 25, crs = crs(chm_ras25))
+
+data_westhoek$x <- as.numeric(as.character(data_westhoek$x))
+data_westhoek$y <- as.numeric(as.character(data_westhoek$y))
+data_vect <- vect(data_westhoek, geom = c("x", "y"), crs = crss)
+
+# --- 1. rasterize & clamp each month into a list ---
+months <- sort(unique(data_westhoek$month))
+grazing_by_month <- vector("list", length(months))
+names(grazing_by_month) <- months
+
+for (m in months) {
+  pts_m <- vect(data_westhoek[data_westhoek$month == m, ], geom = c("x","y"), crs = crss)
+  r_m   <- rasterize(pts_m, template_raster, fun = "count", background = 0)
+  r_m[r_m > 40] <- 40
+  r_m[grazing_density == 0] <- NA
+  grazing_by_month[[as.character(m)]] <- r_m
+}
+
+# --- 2. stack layers & compute target sum for normalization ---
+g_stack   <- rast(grazing_by_month)
+totals    <- global(g_stack, "sum", na.rm = TRUE)[,1]
+target    <- mean(totals)
+
+# --- 3. normalize each layer to have sum == target ---
+norm_stack <- g_stack * (target / totals)
+
+# --- 4. compute mean raster across months ---
+mean_ras <- app(norm_stack, mean, na.rm = TRUE)
+
+# --- 5. compute difference-from-mean stack ---
+diff_stack <- norm_stack - mean_ras
+
+# --- 6. write out each diff raster ---
+for (i in seq_len(nlyr(diff_stack))) {
+  m        <- names(diff_stack)[i]
+  out_file <- sprintf("grazing_diff_norm_month_%s.tif", m)
+  writeRaster(diff_stack[[i]], filename = paste0(folder, out_file), overwrite = TRUE)
+}
+
+# --- 7. plot all monthly “anomaly” rasters in a multi-panel ---
+nl   <- nlyr(diff_stack)
+ncol <- 3
+nrow <- ceiling(nl / ncol)
+
+par(mfrow = c(nrow, ncol), mar = c(2,2,2,1))
+for (i in seq_len(nl)) {
+  month_name <- names(diff_stack)[i]
+  plot(
+    diff_stack[[i]],
+    main = paste("Anomaly Month", month_name),
+    axes = FALSE,
+    box = FALSE
+  )
+}
+par(mfrow = c(1,1))  # reset
+
+```
+
+
+
+
+
 Hier gaan we op basis van de twee afgeleide van de Gaussian (een meer outlier robuuste CHM) een gradient berekenen. Dit is een techniek die vaak gebruikt wordt in beeldverwerking om randen te detecteren.
 ```{r}
 chm_matrix <- as.matrix(chm_ras1)
@@ -317,8 +391,6 @@ MORAN: Horizontale heterogeniteit via Morans I MOVING WINDOW
 chm_ras1_moran = raster('wh_vh1m.tif', crs = crss)
 chm_locm_ras = aggregate(chm_ras1_moran, fun = moran_i, fact = 10/res(chm_ras1))
 
-```
-```{r}
 plot(chm_locm_ras)
 ```
 

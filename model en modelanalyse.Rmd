@@ -32,12 +32,14 @@ if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
 # Load CHM metrics as a named list
 chm_metrics_25 <- list(
-  #shannon = rast(file.path(input_folder, "chm_shannon.tif")),
-  mean    = rast(file.path(input_folder, "chm_mean25.tif")),
-  #moran   = rast(file.path(input_folder, "chm_localmoran.tif")),
-  #fisher  = rast(file.path(input_folder, "chm_fisher.tif")),
-  #max     = rast(file.path(input_folder, "chm_max.tif")),
-  #min     = rast(file.path(input_folder, "chm_min.tif")),
+  #mean    = rast(file.path(input_folder, "chm_mean25.tif")),
+  begrazing_maa = rast(file.path(input_folder, "grazing_diff_norm_month_03.tif")),
+  begrazing_apr = rast(file.path(input_folder, "grazing_diff_norm_month_04.tif")),
+  begrazing_mei = rast(file.path(input_folder, "grazing_diff_norm_month_05.tif")),
+  begrazing_jun   = rast(file.path(input_folder, "grazing_diff_norm_month_06.tif")),
+  begrazing_jul  = rast(file.path(input_folder, "grazing_diff_norm_month_07.tif")),
+  begrazing_aug     = rast(file.path(input_folder, "grazing_diff_norm_month_08.tif")),
+  begrazing_sep     = rast(file.path(input_folder, "grazing_diff_norm_month_09.tif")),
   begrazing = rast(file.path(input_folder, "grazing_density.tif"))
 )
 
@@ -97,113 +99,88 @@ print(cor_matrix)
 
 ## Functions: Process & Model per Species: doet enkel analyses van resolutie 25m
 ```{r functions}
-# Analyze one species: compute metrics and fit binary & positive models
 analyze_species_25 <- function(path, chm_metrics) {
   species_name <- gsub("_combined.tif", "", basename(path), fixed = TRUE)
   message("Processing: ", species_name)
 
+  # --- read & aggregate to 25m
   ras <- rast(path)
-  ras <- aggregate(ras, fun = "mean", fact = 5)
+  ras <- aggregate(ras, fun = "sum", fact = 5)
   crs(ras) <- crss
+
+  # --- mask & build binaries
   ras[ras < 0.5] <- 0
+  bin_ras <- ifel(ras > 0, 1, NA)    # NA beyond any non-zero
+  ras_bin <- ifel(ras > 0.5, 1, 0)   # 0/1 presence
 
-  # Mask distant zeros
-  bin_ras <- ifel(ras > 0, 1, NA)
-  d0 <- distance(bin_ras)
-  ras[d0 >= 70 & ras == 0] <- NA
-  ras_bin <- ifel(ras > 1, 1, 0)
+  results25 <- list()
 
-  results <- list()
-
-  # Loop over CHM metrics
   for (m in names(chm_metrics)) {
     message("  Metric: ", m)
-
     chm <- chm_metrics[[m]]
-    plot(ras * 100, main = paste("Species:", species_name))
 
-    # Stack and clean
-    message("Stacking and cleaning rasters")
+    # quick peek
+    # plot(chm)
+    # plot(ras * 100, main = paste("Species:", species_name))
+
+    # --- stack & extract
     stk <- c(chm, ras_bin, ras)
     names(stk) <- c("chm", "species_binary", "species")
-    vals <- terra::values(stk, dataframe = TRUE, na.rm = TRUE)
-    coords <- terra::xyFromCell(stk, which(!is.na(vals[[1]])))
-    df <- as.data.table(cbind(coords, vals))
+    vals  <- terra::values(stk, dataframe = TRUE, na.rm = TRUE)
+    cells <- which(!is.na(vals$chm))
+    coords_df <- terra::xyFromCell(stk, cells)
+    df    <- as.data.table(cbind(coords_df, vals[cells, ]))
 
-    if (nrow(df) == 0 || sum(df$species_binary) == 0) next
-
-    if (sum(df$species > 1 & df$chm > 0) < 20) {
-      warning("Less than 20 overlapping values between species and CHM — skipping species.")
+    if (nrow(df)==0 || sum(df$species_binary)==0) next
+    if (sum(df$species > 1) < 20) {
+      warning("  <20 overlapping values — skipping.")
       next
     }
 
-    message("Calculating neighborhood structure")
+    message("  Calculating neighborhood structure")
+    # --- compute neighbours!
+    coords_mat <- as.matrix(df[, .(x,y)])
+    nb         <- knearneigh(coords_mat, k = 4) |>
+                  knn2nb(sym = TRUE)
+    W          <- as(nb2mat(nb, style = "B"), "sparseMatrix")
+    diag(W)    <- 0
 
-    coords <- as.matrix(df[, .(x, y)])
-    k <- 4
-    W <- as(nb2mat(nb, style = "B"), "sparseMatrix")
-    diag(W) <- 0
+    if (nrow(W) != nrow(df)) {
+      warning("  Neighbour matrix size mismatch — skipping.")
+      next
+    }
 
-    if (nrow(W) != nrow(df)) next
-
-    message("Creating INLA graph")
+    message("  Creating INLA graph & fitting models")
     df[, spatial_id := .I]
     g <- inla.read.graph(W)
 
-    message("Fitting binary model")
+    # binary
     mb <- inla(
-      species_binary ~ chm + f(spatial_id, model = "besag", graph = g),
+      species_binary ~ chm + f(spatial_id, model="besag", graph=g),
       data = df, family = "binomial",
-      control.compute = list(dic = TRUE, waic = TRUE)
+      control.compute = list(dic=TRUE, waic=TRUE)
     )
 
-    message("Fitting positive model")
+    # positive
     dfp <- df[species > 0]
-    mp <- NULL
-    if (nrow(dfp) > 0) {
+    mp  <- NULL
+    if (nrow(dfp)>0) {
       mp <- inla(
-        species ~ chm + f(spatial_id, model = "besag", graph = g),
+        species ~ chm + f(spatial_id, model="besag", graph=g),
         data = dfp, family = "gamma",
-        control.compute = list(dic = TRUE, waic = TRUE)
+        control.compute = list(dic=TRUE, waic=TRUE)
       )
     }
 
-    results[[m]] <- list(binary_model = mb, positive_model = mp)
-  }
-
-  # Full Model with all CHM metrics (outside loop)
-  message("Fitting full model with all CHM metrics")
-  full_stk <- rast(chm_metrics)
-  full_stk <- c(full_stk, ras_bin, ras)
-  names(full_stk) <- c(names(chm_metrics), "species_binary", "species")
-
-  full_vals <- terra::values(full_stk, dataframe = TRUE, na.rm = TRUE)
-  full_df <- as.data.table(full_vals)
-
-  chm_formula <- paste(names(chm_metrics), collapse = " + ")
-
-  mb_full <- inla(
-    as.formula(paste("species_binary ~", chm_formula)),
-    data = full_df, 
-    family = "binomial",
-    control.compute = list(dic = TRUE, waic = TRUE)
-  )
-
-  dfp_full <- full_df[species > 0]
-  mp_full <- NULL
-  if (nrow(dfp_full) > 0) {
-    mp_full <- inla(
-      as.formula(paste("species ~", chm_formula)),
-      data = dfp_full, 
-      family = "gamma",
-      control.compute = list(dic = TRUE, waic = TRUE)
+    results25[[m]] <- list(
+      binary_model   = mb,
+      positive_model = mp
     )
   }
 
-  results$full_model <- list(binary_model_full = mb_full, positive_model_full = mp_full)
-
-  return(results)
+  return(results25)
 }
+
 
 ```
 
@@ -224,7 +201,7 @@ analyze_species_5 <- function(path, chm_metrics) {
   bin_ras <- ifel(ras > 0.5, 1, NA)
   d0 <- distance(bin_ras)
   ras[d0 >= 0 & ras == 0] <- NA
-  ras_bin <- ifel(ras > 1, 1, 0)
+  ras_bin <- ifel(ras > 0.5, 1, 0)
 
   results <- list()
 
@@ -302,14 +279,14 @@ Zorg dat je geen bestanden geopend hebt die INLA gebruikt (bijvoorbeeld de raste
 
 ```{r process_all, message=TRUE, warning=TRUE}
 # Apply analyze_species across all TIFF files
-chm_metrics <- chm_metrics_5 #kies 5 (m) of 25  (m) resolutie
+chm_metrics <- chm_metrics_25 #kies 5 (m) of 25  (m) resolutie
 
 process_all_species <- function(dir, chm_metrics) {
   all <- list.files(dir, full.names = TRUE)
   tif <- all[endsWith(all, "_combined.tif")]
   out <- list()
   for (f in tif) {
-    out[[basename(f)]] <- analyze_species_5(f, chm_metrics)#kies opnieuw 5 (m) of 25  (m) resolutie
+    out[[basename(f)]] <- analyze_species_25(f, chm_metrics)#kies opnieuw 5 (m) of 25  (m) resolutie
     gc()
   }
   return(out)
