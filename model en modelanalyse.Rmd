@@ -248,7 +248,7 @@ analyze_species_5 <- function(path, chm_metrics) {
       warning("Less than 20 overlapping values between species and CHM — skipping species.")
       next
     }
-
+#hier bepalen we welke cellen direct aangrenzend zijn. 4 en 8 zijn beiden legitieme keuzes. Merk op dat de ruimtelijke correlatie hier niet berekend wordt!
     message("Calculating neighborhood structure")
 
     coords <- as.matrix(df[, .(x, y)])
@@ -294,7 +294,9 @@ analyze_species_5 <- function(path, chm_metrics) {
 
 Hier kan je het model eindelijk runnen. Dit is echter het zwaarste stuk van heel het project. Doe dit dus niet zomaar! Om tijd te besparen kan je de test data (alternatieve species_folder) gebruiken. Hier gebruik je dan een subset van de data.
 
-Merk op: Je dient nog te selecteren of je het model wil runnen voor de 5m resolutie parameters of 25m resolutie parameters (eg. begrazing)
+Merk op: Je dient nog te selecteren of je het model wil runnen voor de 5m resolutie parameters of 25m resolutie parameters (eg. begrazing). En dat op twee plaatsen, zie comments. 
+
+Zorg dat je geen bestanden geopend hebt die INLA gebruikt (bijvoorbeeld de rasters). Anders crasht het programma.
 
 
 
@@ -307,8 +309,8 @@ process_all_species <- function(dir, chm_metrics) {
   tif <- all[endsWith(all, "_combined.tif")]
   out <- list()
   for (f in tif) {
-    print(rast(f))
     out[[basename(f)]] <- analyze_species_5(f, chm_metrics)#kies opnieuw 5 (m) of 25  (m) resolutie
+    gc()
   }
   return(out)
 }
@@ -595,5 +597,78 @@ print(head(df_results))
 csv_file <- file.path(plot_dir, "combined_summary_all.csv")
 write.csv2(df_results, csv_file, row.names = FALSE)
 cat("Written:", csv_file, "\n")
+```
+
+```{r}
+library(dplyr)
+library(tibble)
+library(purrr)
+library(knitr)
+
+# — 1) assume you have these three data.frames already:
+#    binary_sig_summary_all  (from your first chunk)
+#    positive_sig_summary_all  (see below)
+#    combined_summary        (from your second chunk)
+
+# If you haven’t yet made the positive effects summary, here’s one way:
+positive_sig_summary_all <-
+  map_dfr(species_names, function(sp) {
+    res <- all_results[[sp]]
+    if (is.null(res)) return(NULL)
+
+    imap_dfr(res, function(mr, mn) {
+      gm <- mr$positive_model
+      if (is.null(gm)) return(NULL)
+
+      as.data.frame(gm$summary.fixed) %>%
+        rownames_to_column("Predictor") %>%
+        rename(
+          pos_mean    = mean,
+          pos_sd      = sd,
+          pos_lower90 = `0.025quant`,
+          pos_upper90 = `0.975quant`
+        ) %>%
+        mutate(
+          Species = sp,
+          Metric  = mn,
+          pos_p.value = 2 * (1 - pnorm(abs(pos_mean / pos_sd)))
+        ) %>%
+        select(Species, Metric, Predictor, pos_mean, pos_sd, pos_p.value, pos_lower90, pos_upper90)
+    })
+  })
+
+# — 2) Pull in your binary summary and combined summary, renaming columns to avoid clashes
+bin  <- binary_sig_summary_all %>%
+  rename(
+    bin_mean    = mean,
+    bin_sd      = sd,
+    bin_p.value = p.value,
+    bin_lower90 = lower90,
+    bin_upper90 = upper90
+  )
+
+comb <- combined_summary %>%
+  rename(
+    comb_mean = mean,
+    comb_sd   = sd,
+    comb_pval = pval
+  )
+
+# — 3) Full-join all three on Species, Metric & Predictor
+full_summary <- bin %>%
+  full_join(positive_sig_summary_all, by = c("Species","Metric","Predictor")) %>%
+  full_join(comb,                     by = c("Species","Metric","Predictor")) %>%
+  # optional: order nicely
+  arrange(Species, Metric, Predictor)
+
+# — 4) Print and export
+kable(full_summary,
+      caption = "Binary, Positive and Combined Effects per Predictor") 
+
+# write to CSV (using semicolon as separator)
+csv_file <- file.path(plot_dir, "all_effects_summary.csv")
+write.csv2(full_summary, csv_file, row.names = FALSE)
+cat("Written:", csv_file, "\n")
+
 ```
 
