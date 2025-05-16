@@ -492,14 +492,14 @@ Zorg dat je geen bestanden geopend hebt die INLA gebruikt (bijvoorbeeld de raste
 
 ```{r process_all, message=TRUE, warning=TRUE}
 # Apply analyze_species across all TIFF files
-chm_metrics <- chm_metrics_5 #kies 5 (m) of 25  (m) resolutie
+chm_metrics <- chm_metrics_25 #kies 5 (m) of 25  (m) resolutie
 
 process_all_species <- function(dir, chm_metrics) {
   all <- list.files(dir, full.names = TRUE)
   tif <- all[endsWith(all, "_combined.tif")]
   out <- list()
   for (f in tif) {
-    out[[basename(f)]] <- analyze_species_5(f, chm_metrics)#kies opnieuw 5 (m) of 25  (m) resolutie
+    out[[basename(f)]] <- analyze_species_25(f, chm_metrics)#kies opnieuw 5 (m) of 25  (m) resolutie
     gc()
   }
   return(out)
@@ -508,14 +508,14 @@ process_all_species <- function(dir, chm_metrics) {
 # Run modeling
 species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten/"
 #species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten_test/"
-all_results5 <- process_all_species(species_folder, chm_metrics)
+all_results25 <- process_all_species(species_folder, chm_metrics)
 
 
 ```
 
 ```{r}
   saveRDS(
-    all_results55,
+    all_results25,
     file = file.path(plot_dir, paste0(sp, "_all_metrics_25_res.rds"))
   )
 ```
@@ -527,7 +527,7 @@ library(googlesheets4)
 library(googledrive)
 library(readxl)
 
-all_results <- all_results5
+all_results <- all_results25
 tmp_lookup <- tempfile(fileext = ".xlsx")
 drive_auth()
 # download the Google Sheet as xlsx
@@ -632,9 +632,10 @@ for (sp in names(all_results)) {
     
     # pull the CHM raster for this metric
     chm <- chm_metrics[[mn]]
-    # compute its min & max
-    rng <- terra::global(chm, c("min","max"), na.rm=TRUE)[1, ]
-    x_range <- c(rng["min"], rng["max"])
+    
+    # compute its min & max as numeric
+    stats   <- terra::global(chm, c("min","max"), na.rm=TRUE)
+    x_range <- as.numeric(stats[1, ])  # c(min, max)
     
     # now call your existing plotting function
     plot_boxcox_model(
@@ -645,6 +646,7 @@ for (sp in names(all_results)) {
     )
   }
 }
+
 
 
 
@@ -690,7 +692,7 @@ binary_sig_summary_all <-
           # two‐sided p‐value
           p.value = 2 * (1 - pnorm(abs(mean / sd)))
         ) %>%
-        select(Species, Metric, Predictor, mean, sd, p.value, lower90, upper90)
+        dplyr::select(Species, Metric, Predictor, mean, sd, p.value, lower90, upper90)
     })
   })
 
@@ -737,7 +739,7 @@ get_fixed <- function(inla_model) {
 all_results <- map(all_results, function(res_sp) {
   map(res_sp, function(mr) {
     bm <- mr$binary_model
-    pm <- mr$positive_model$model   # pull out the INLA object
+    pm <- mr$positive_model$model
     if (!is.null(bm) && !is.null(pm)) {
       fb <- get_fixed(bm) %>% rename(bin_mean = mean, bin_sd = sd)
       fp <- get_fixed(pm) %>% rename(pos_mean = mean, pos_sd = sd)
@@ -763,7 +765,7 @@ combined_summary <- imap_dfr(all_results, function(res_sp, sp) {
     if (is.null(ce) || nrow(ce) == 0) return(NULL)
     ce %>%
       mutate(Species = sp, Metric = mn) %>%
-      select(Species, Metric, Predictor, mean, sd, pval)
+      dplyr::select(Species, Metric, Predictor, mean, sd, pval)
   })
 })
 
@@ -776,6 +778,7 @@ if (nrow(combined_summary) > 0) {
 } else {
   cat("No common predictors found in both models for any species/metric.\n")
 }
+
 
 
 ```
@@ -793,25 +796,24 @@ cat("Written:", csv_file, "\n")
 ```
 
 ```{r}
+
+
+# If you haven’t yet made the positive effects summary, here’s one way:
 library(dplyr)
 library(tibble)
 library(purrr)
 library(knitr)
 
-# — 1) assume you have these three data.frames already:
-#    binary_sig_summary_all  (from your first chunk)
-#    positive_sig_summary_all  (see below)
-#    combined_summary        (from your second chunk)
-
-# If you haven’t yet made the positive effects summary, here’s one way:
 positive_sig_summary_all <-
   map_dfr(species_names, function(sp) {
     res <- all_results[[sp]]
     if (is.null(res)) return(NULL)
 
     imap_dfr(res, function(mr, mn) {
-      gm <- mr$positive_model
-      if (is.null(gm)) return(NULL)
+      pm <- mr$positive_model
+      if (is.null(pm$model)) return(NULL)    # skip if no positive model
+
+      gm <- pm$model                          # grab the INLA fit
 
       as.data.frame(gm$summary.fixed) %>%
         rownames_to_column("Predictor") %>%
@@ -822,13 +824,20 @@ positive_sig_summary_all <-
           pos_upper90 = `0.975quant`
         ) %>%
         mutate(
-          Species = sp,
-          Metric  = mn,
+          Species     = sp,
+          Metric      = mn,
           pos_p.value = 2 * (1 - pnorm(abs(pos_mean / pos_sd)))
         ) %>%
-        select(Species, Metric, Predictor, pos_mean, pos_sd, pos_p.value, pos_lower90, pos_upper90)
+        dplyr::select(
+          Species, Metric, Predictor,
+          pos_mean, pos_sd, pos_p.value,
+          pos_lower90, pos_upper90
+        )
     })
   })
+
+# then continue with your bin / comb / full-join workflow…
+
 
 # — 2) Pull in your binary summary and combined summary, renaming columns to avoid clashes
 bin  <- binary_sig_summary_all %>%
