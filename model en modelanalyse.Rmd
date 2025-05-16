@@ -99,8 +99,13 @@ print(cor_matrix)
 
 ## Functions: Process & Model per Species: doet enkel analyses van resolutie 25m
 ```{r functions}
+library(terra)
+library(data.table)
+library(MASS)     # for boxcox()
+library(INLA)
+
 analyze_species_25 <- function(path, chm_metrics) {
-  species_name <- gsub("_combined.tif", "", basename(path), fixed = TRUE)
+  species_name <- sub("_combined\\.tif$", "", basename(path))
   message("Processing: ", species_name)
 
   # --- read & aggregate to 25m
@@ -119,67 +124,82 @@ analyze_species_25 <- function(path, chm_metrics) {
     message("  Metric: ", m)
     chm <- chm_metrics[[m]]
 
-    # quick peek
-    # plot(chm)
-    # plot(ras * 100, main = paste("Species:", species_name))
-
     # --- stack & extract
     stk <- c(chm, ras_bin, ras)
     names(stk) <- c("chm", "species_binary", "species")
     vals  <- terra::values(stk, dataframe = TRUE, na.rm = TRUE)
     cells <- which(!is.na(vals$chm))
-    coords_df <- terra::xyFromCell(stk, cells)
-    df    <- as.data.table(cbind(coords_df, vals[cells, ]))
+    df    <- as.data.table(cbind(terra::xyFromCell(stk, cells), vals[cells, ]))
 
-    if (nrow(df)==0 || sum(df$species_binary)==0) next
+    if (nrow(df) == 0 || sum(df$species_binary) == 0) {
+      warning("  no data or no presences — skipping.")
+      next
+    }
     if (sum(df$species > 1) < 20) {
       warning("  <20 overlapping values — skipping.")
       next
     }
 
-    message("  Calculating neighborhood structure")
-    # --- compute neighbours!
+    # --- neighborhood & graph
     coords_mat <- as.matrix(df[, .(x,y)])
-    nb         <- knearneigh(coords_mat, k = 4) |>
-                  knn2nb(sym = TRUE)
+    nb         <- knearneigh(coords_mat, k = 4) |> knn2nb(sym = TRUE)
     W          <- as(nb2mat(nb, style = "B"), "sparseMatrix")
     diag(W)    <- 0
-
     if (nrow(W) != nrow(df)) {
-      warning("  Neighbour matrix size mismatch — skipping.")
+      warning("  neighbour matrix mismatch — skipping.")
       next
     }
-
-    message("  Creating INLA graph & fitting models")
     df[, spatial_id := .I]
     g <- inla.read.graph(W)
 
-    # binary
+    # --- 1) binary model
     mb <- inla(
       species_binary ~ chm + f(spatial_id, model="besag", graph=g),
-      data = df, family = "binomial",
+      data            = df, 
+      family          = "binomial",
       control.compute = list(dic=TRUE, waic=TRUE)
     )
 
-    # positive
+    # --- 2) positive (Box–Cox + Gaussian) model
     dfp <- df[species > 0]
     mp  <- NULL
-    if (nrow(dfp)>0) {
+    if (nrow(dfp) > 0) {
+      # find optimal λ
+      sp_df <- data.frame(y = dfp$species)
+      bc    <- boxcox(y ~ 1, data = sp_df, plotit = FALSE)
+      lambda <- bc$x[which.max(bc$y)]
+      message(sprintf("    Box–Cox λ = %.3f", lambda))
+
+      # apply transform
+      if (abs(lambda) < 1e-6) {
+        dfp[, species_tr := log(species)]
+      } else {
+        dfp[, species_tr := (species^lambda - 1) / lambda]
+      }
+
+      # fit Gaussian on transformed response
       mp <- inla(
-        species ~ chm + f(spatial_id, model="besag", graph=g),
-        data = dfp, family = "gamma",
+        species_tr ~ chm + f(spatial_id, model="besag", graph=g),
+        data            = dfp,
+        family          = "gaussian",
+        control.family  = list(link = "identity"),
         control.compute = list(dic=TRUE, waic=TRUE)
       )
+
+      # optional: diagnostic plot
+      fitted_vals <- mp$summary.fitted.values$mean
+      resid_vals  <- dfp$species_tr - fitted_vals
     }
 
     results25[[m]] <- list(
       binary_model   = mb,
-      positive_model = mp
+      positive_model = list(model = mp, lambda = lambda)
     )
   }
 
   return(results25)
 }
+
 
 
 ```
@@ -198,7 +218,7 @@ analyze_species_5 <- function(path, chm_metrics) {
   message("Processing: ", species_name)
 
   ras <- rast(path)
-  ras[ras < 0.5] <- 0
+  ras[ras < 0.2] <- 0
   crs(ras) <- crss
 
   # Mask distant zeros
@@ -249,11 +269,6 @@ analyze_species_5 <- function(path, chm_metrics) {
     dfp <- df[species > 0]
     mp  <- NULL
     if (nrow(dfp) > 0) {
-      # histogram
-      hist(dfp$species,
-           breaks = 30,
-           main   = paste("Positive values —", species_name, m),
-           xlab   = "Abundance", ylab = "Frequency")
 
       # Box–Cox transform
       sp_df <- data.frame(y = dfp$species)
@@ -278,16 +293,11 @@ analyze_species_5 <- function(path, chm_metrics) {
       # Residuals vs fitted
       fitted_vals <- mp$summary.fitted.values$mean
       resid_vals  <- dfp$species_tr - fitted_vals
-      plot(fitted_vals, resid_vals,
-           xlab = "Fitted (transformed)",
-           ylab = "Residuals (transformed)",
-           main = paste("Residuals vs Fitted (Box–Cox)\n", species_name, m))
-      abline(h = 0, lty = 2)
     }
 
     results[[m]] <- list(
       binary_model   = mb,
-      positive_model = mp
+      positive_model = list(model = mp, lambda = lambda)
     )
   }
 
@@ -482,14 +492,14 @@ Zorg dat je geen bestanden geopend hebt die INLA gebruikt (bijvoorbeeld de raste
 
 ```{r process_all, message=TRUE, warning=TRUE}
 # Apply analyze_species across all TIFF files
-chm_metrics <- chm_metrics_25 #kies 5 (m) of 25  (m) resolutie
+chm_metrics <- chm_metrics_5 #kies 5 (m) of 25  (m) resolutie
 
 process_all_species <- function(dir, chm_metrics) {
   all <- list.files(dir, full.names = TRUE)
   tif <- all[endsWith(all, "_combined.tif")]
   out <- list()
   for (f in tif) {
-    out[[basename(f)]] <- analyze_species_25(f, chm_metrics)#kies opnieuw 5 (m) of 25  (m) resolutie
+    out[[basename(f)]] <- analyze_species_5(f, chm_metrics)#kies opnieuw 5 (m) of 25  (m) resolutie
     gc()
   }
   return(out)
@@ -504,9 +514,13 @@ all_results5 <- process_all_species(species_folder, chm_metrics)
 Hier gaan we de namen veranderen naar nederlandse namen. Kies ook opnieuw of je met de resultaten van 5m of 25m resolutie werkt.
 
 ```{r}
+library(googlesheets4)
+library(googledrive)
+library(readxl)
+
 all_results <- all_results5
 tmp_lookup <- tempfile(fileext = ".xlsx")
-
+drive_auth()
 # download the Google Sheet as xlsx
 drive_download(
   as_id("1-hlCyqBvBbhOLiPWDGNZPa20i8dRq0yr"),  # your sheet’s file ID
@@ -542,87 +556,74 @@ species_names <- names(all_results)
 
 ## Visualization of positive data
 ```{r run_all}
-library(dplyr)
-library(ggplot2)
-library(tibble)
-
-# Function to plot and save the gamma model
-plot_gamma_model <- function(sp, mn, model, plot_dir) {
-  cat("✅ Plotting model for:", sp, mn, "\n")
+plot_boxcox_model <- function(sp, mn, pos_res, plot_dir, x_range) {
+  cat("Plotting Box–Cox model for:", sp, mn, "\n")
   
-  # Extract model coefficients
-  b0   <- model$summary.fixed["(Intercept)", "mean"]
-  b1   <- model$summary.fixed[2, "mean"]
-  prec <- model$summary.hyperpar[1, "mean"]
+  # pull out the INLA fit and λ
+  model  <- pos_res$model
+  lambda <- pos_res$lambda
   
-  # Create prediction grid
-  grid <- seq(0, 10, length.out = 100)
-  linp <- b0 + b1 * grid
-  mp   <- exp(linp)
-  lo   <- qgamma(0.05, shape = prec, scale = mp / prec)
-  hi   <- qgamma(0.95, shape = prec, scale = mp / prec)
-  pd   <- tibble(x = grid, fit = mp, lower = lo, upper = hi)
+  # fixed effects
+  fe   <- model$summary.fixed
+  b0   <- fe["(Intercept)", "mean"]
+  b1   <- fe["chm",         "mean"]
+  se1  <- fe["chm", "sd"]
+  pval <- 2 * (1 - pnorm(abs(b1 / se1)))
+  cat("  λ =", round(lambda,3), "| Intercept =", round(b0,3),
+      "| Slope =", round(b1,3), "| p =", format.pval(pval,3), "\n")
   
-  # p-value for slope
-  est <- b1
-  se  <- model$summary.fixed[2, "sd"]
-  pval <- 2 * (1 - pnorm(abs(est / se)))
+  # build prediction grid
+  grid <- seq(x_range[1], x_range[2], length.out = 200)
+  eta  <- b0 + b1 * grid
   
-  cat("✅ Model coefficients: Intercept =", b0,
-      "| Slope =", b1,
-      "| Precision =", prec, "\n")
-  cat("✅ Plotting model with p-value:",
-      format.pval(pval, digits = 3), "for", sp, mn, "\n")
+  # back-transform from Box–Cox
+  if (abs(lambda) < 1e-6) {
+    mu <- exp(eta)
+  } else {
+    mu <- (lambda * eta + 1)^(1/lambda)
+  }
+  pd <- tibble(x = grid, fit = mu)
   
-  # Build the ggplot, including species name in the title
-  p2 <- ggplot(pd, aes(x = x, y = fit)) +
-    geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
-    geom_line() +
+  # make plot
+  p <- ggplot(pd, aes(x = x, y = fit)) +
+    geom_line(size = 1) +
     labs(
-      title    = paste0("Species: ", sp),
-      subtitle = paste0("Model: ", mn, " (p = ", format.pval(pval, digits = 2), ")"),
-      x        = "Predictor (Grid)",
-      y        = "Abundance"
+      title    = paste("Species:", sp),
+      subtitle = paste(mn, 
+                       sprintf("(λ=%.2f, p=%s)", 
+                               lambda, format.pval(pval,2))),
+      x        = "CHM metric",
+      y        = "Abundance (back-transformed)"
     ) +
     theme_minimal()
   
-  # Save the plot
-  output_path <- file.path(plot_dir, paste0(sp, "_", mn, "_gamma.png"))
-  cat("✅ Saving plot at:", output_path, "\n")
-  
-  tryCatch({
-    ggsave(output_path, p2, width = 8, height = 6, dpi = 300)
-    cat("✅ Plot saved successfully\n")
-  }, error = function(e) {
-    cat("❌ Error saving plot:", e$message, "\n")
-  })
+  # save
+  out_file <- file.path(plot_dir, paste0(sp, "_", mn, "_boxcox.png"))
+  cat("Saving to:", out_file, "\n")
+  ggsave(out_file, p, width = 7, height = 5, dpi = 300)
+  cat("Done.\n\n")
 }
 
-# Main Loop: Processing all species and all models
+# Example of main loop:
+# assume `all_results` is a named list of species → metrics → models
+# and that .positive_model is a list(model=lambda)
+
 for (sp in names(all_results)) {
-  res <- all_results[[sp]]  # res is a list of models per metric
-  
-  cat("\nProcessing species:", sp, "\n")
-  
-  for (mn in names(res)) {
-    mr <- res[[mn]]
-    
-    # Skip if no positive model
-    if (is.null(mr$positive_model)) {
-      cat("❌ Skipping", mn, "- No positive model\n")
+  cat("=== Species:", sp, "===\n")
+  for (mn in names(all_results[[sp]])) {
+    pm <- all_results[[sp]][[mn]]$positive_model
+    if (is.null(pm$model)) {
+      cat(" Skipping", mn, "- no positive model\n")
       next
     }
-    
-    cat("✅ Processing model:", mn, "\n")
-    
-    # Extract the model
-    model <- mr$positive_model
-    
-    # Plot and save
-    plot_gamma_model(sp, mn, model, plot_dir)
+    plot_boxcox_model(
+      sp, mn,
+      pos_res = pm,
+      plot_dir = plot_dir,     # set this beforehand
+      x_range  = c(min_env, max_env)  # your CHM range
+    )
   }
 }
-
 
 
 ```
@@ -702,15 +703,11 @@ library(dplyr)
 library(purrr)
 library(knitr)
 
-# 0) Helper to extract summary.fixed as a named tibble:
-get_fixed <- function(model) {
-  as.data.frame(model$summary.fixed) %>%
+# 0) Helper to extract summary.fixed as a tibble (dropping intercept)
+get_fixed <- function(inla_model) {
+  as.data.frame(inla_model$summary.fixed) %>%
     rownames_to_column("Predictor") %>%
-    rename(
-      mean = mean,
-      sd   = sd
-    ) %>%
-    # drop intercept here so it never appears
+    rename(mean = mean, sd = sd) %>%
     filter(Predictor != "(Intercept)")
 }
 
@@ -718,21 +715,19 @@ get_fixed <- function(model) {
 all_results <- map(all_results, function(res_sp) {
   map(res_sp, function(mr) {
     bm <- mr$binary_model
-    gm <- mr$positive_model
-    if (!is.null(bm) && !is.null(gm)) {
-      fb <- get_fixed(bm)
-      fg <- get_fixed(gm)
-      # inner join on Predictor to keep only those in both models
-      fb %>%
-        inner_join(fg, by = "Predictor", suffix = c(".bin", ".gam")) %>%
+    pm <- mr$positive_model$model   # pull out the INLA object
+    if (!is.null(bm) && !is.null(pm)) {
+      fb <- get_fixed(bm) %>% rename(bin_mean = mean, bin_sd = sd)
+      fp <- get_fixed(pm) %>% rename(pos_mean = mean, pos_sd = sd)
+
+      ce_tbl <- inner_join(fb, fp, by = "Predictor") %>%
         transmute(
           Predictor,
-          mean  = mean.bin + mean.gam,
-          sd    = sqrt(sd.bin^2 + sd.gam^2),
-          pval  = 2 * (1 - pnorm(abs((mean.bin + mean.gam) / sd)))
-        ) -> ce_tbl
-      
-      # store as list of lists
+          mean = bin_mean + pos_mean,
+          sd   = sqrt(bin_sd^2 + pos_sd^2),
+          pval = 2 * (1 - pnorm(abs(mean / sd)))
+        )
+
       mr$combined_effect <- ce_tbl
     }
     mr
@@ -740,27 +735,21 @@ all_results <- map(all_results, function(res_sp) {
 })
 
 # 2) Build a long summary tibble
-combined_summary <- map_dfr(
-  names(all_results),
-  function(sp) {
-    map_dfr(
-      names(all_results[[sp]]),
-      function(mn) {
-        ce <- all_results[[sp]][[mn]]$combined_effect
-        if (is.null(ce) || nrow(ce) == 0) return(NULL)
-        ce %>%
-          mutate(Species = sp, Metric = mn) %>%
-          select(Species, Metric, Predictor, mean, sd, pval)
-      }
-    )
-  }
-)
+combined_summary <- imap_dfr(all_results, function(res_sp, sp) {
+  imap_dfr(res_sp, function(mr, mn) {
+    ce <- mr$combined_effect
+    if (is.null(ce) || nrow(ce) == 0) return(NULL)
+    ce %>%
+      mutate(Species = sp, Metric = mn) %>%
+      select(Species, Metric, Predictor, mean, sd, pval)
+  })
+})
 
 # 3) Print
 if (nrow(combined_summary) > 0) {
   kable(
     combined_summary,
-    caption = "Combined (Logistic+Positive) Effects per Predictor (Intercept Excluded)"
+    caption = "Combined (Logistic + Box–Cox Gaussian) Effects per Predictor"
   )
 } else {
   cat("No common predictors found in both models for any species/metric.\n")
