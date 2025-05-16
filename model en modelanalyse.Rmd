@@ -43,12 +43,12 @@ chm_metrics_25 <- list(
 
 chm_metrics_5 <- list(
   #shannon = rast(file.path(input_folder, "chm_shannon.tif")),
-  mean    = rast(file.path(input_folder, "chm_ras5.tif")),
+  #mean    = rast(file.path(input_folder, "chm_ras5.tif")),
   #moran   = rast(file.path(input_folder, "chm_localmoran.tif")),
   #fisher  = rast(file.path(input_folder, "chm_fisher.tif")),
   #max     = rast(file.path(input_folder, "chm_max.tif")),
   #min     = rast(file.path(input_folder, "chm_min.tif")),
-  #edgness_quant = rast(file.path(input_folder, "wh_vh1m_edges_quantile.tif")),
+  edgness_glow = rast(file.path(input_folder, "wh_vh1m_edges_glow.tif")),
   #edgness_avg = rast(file.path(input_folder, "wh_vh1m_edges_aggregated.tif")),
   edgness_2 = rast(file.path(input_folder, "wh_vh1m_edges_filtered.tif"))
 )
@@ -88,6 +88,10 @@ calculate_chm_correlations <- function(chm_metrics) {
 
 cor_matrix <- calculate_chm_correlations(chm_metrics_5)
 print(cor_matrix)
+```
+```{r}
+
+
 ```
 
 
@@ -137,14 +141,6 @@ analyze_species_25 <- function(path, chm_metrics) {
 
     coords <- as.matrix(df[, .(x, y)])
     k <- 4
-    repeat {
-      nb <- knearneigh(coords, k = k) |> knn2nb(sym = TRUE)
-      if (all(card(nb) > 0) || k > 16) break
-      k <- k + 4
-    }
-
-    if (k > 16) next
-
     W <- as(nb2mat(nb, style = "B"), "sparseMatrix")
     diag(W) <- 0
 
@@ -237,8 +233,6 @@ analyze_species_5 <- function(path, chm_metrics) {
     message("  Metric: ", m)
 
     chm <- chm_metrics[[m]]
-    print(chm)
-    print(ras_bin)
 
     # Stack and clean
     message("Stacking and cleaning rasters")
@@ -291,45 +285,18 @@ analyze_species_5 <- function(path, chm_metrics) {
     results[[m]] <- list(binary_model = mb, positive_model = mp)
   }
 
-  # Full Model with all CHM metrics (outside loop)
-  message("Fitting full model with all CHM metrics")
-  full_stk <- rast(chm_metrics)
-  full_stk <- c(full_stk, ras_bin, ras)
-  names(full_stk) <- c(names(chm_metrics), "species_binary", "species")
-
-  full_vals <- terra::values(full_stk, dataframe = TRUE, na.rm = TRUE)
-  full_df <- as.data.table(full_vals)
-
-  chm_formula <- paste(names(chm_metrics), collapse = " + ")
-
-  mb_full <- inla(
-    as.formula(paste("species_binary ~", chm_formula)),
-    data = full_df, 
-    family = "binomial",
-    control.compute = list(dic = TRUE, waic = TRUE)
-  )
-
-  dfp_full <- full_df[species > 0]
-  mp_full <- NULL
-  if (nrow(dfp_full) > 0) {
-    mp_full <- inla(
-      as.formula(paste("species ~", chm_formula)),
-      data = dfp_full, 
-      family = "gamma",
-      control.compute = list(dic = TRUE, waic = TRUE)
-    )
-  }
-
-  results$full_model <- list(binary_model_full = mb_full, positive_model_full = mp_full)
-
   return(results)
 }
 
 ```
 
-Hier kan je het model eindelijk runnen. Dit is echter het zwaarste stuk van heel het project. Doe dit dus niet zomaar! Om tijd te besparen kan je de test data (alternatieve species_folder) gebruiken. Hier gebruik je dan een suset van de data.
 
-Merk op: full model runt twee keer per soort, mar heb nu even geen zin om die onnodige computerkracht te fiksen.
+
+Hier kan je het model eindelijk runnen. Dit is echter het zwaarste stuk van heel het project. Doe dit dus niet zomaar! Om tijd te besparen kan je de test data (alternatieve species_folder) gebruiken. Hier gebruik je dan een subset van de data.
+
+Merk op: Je dient nog te selecteren of je het model wil runnen voor de 5m resolutie parameters of 25m resolutie parameters (eg. begrazing)
+
+
 
 ```{r process_all, message=TRUE, warning=TRUE}
 # Apply analyze_species across all TIFF files
@@ -351,6 +318,7 @@ species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aanda
 #species_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/aandachtsoorten_test/"
 all_results <- process_all_species(species_folder, chm_metrics)
 ```
+
 ```{r}
 
 tmp_lookup <- tempfile(fileext = ".xlsx")
