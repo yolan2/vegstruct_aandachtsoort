@@ -49,7 +49,7 @@ chm_metrics_25 <- list(
   begrazing_mei = rast(file.path(input_folder, "residual_sum_mei.tif")),
   begrazing_jun   = rast(file.path(input_folder, "residual_sum_jun.tif")),
   begrazing_jul  = rast(file.path(input_folder, "residual_sum_jul.tif")),
-  begrazing_aug     = rast(file.path(input_folder, "residual_sum_aug.tif"))
+  begrazing_aug     = rast(file.path(input_folder, "residual_sum_aug.tif")),
 )
 
 chm_metrics_5 <- list(
@@ -59,9 +59,10 @@ chm_metrics_5 <- list(
   #fisher  = rast(file.path(input_folder, "chm_fisher.tif")),
   #max     = rast(file.path(input_folder, "chm_max.tif")),
   #min     = rast(file.path(input_folder, "chm_min.tif")),
-  edgness_glow = rast(file.path(input_folder, "wh_vh1m_edges_glow.tif")),
+  #edgness_glow = rast(file.path(input_folder, "wh_vh1m_edges_glow.tif")),
+  begrazing_onaf = rast(file.path(input_folder, "residual_sum_all_year.tif"))
   #edgness_avg = rast(file.path(input_folder, "wh_vh1m_edges_aggregated.tif")),
-  edgness_2 = rast(file.path(input_folder, "wh_vh1m_edges_filtered.tif"))
+  #edgness_2 = rast(file.path(input_folder, "wh_vh1m_edges_filtered.tif"))
 )
 
 crss = " +proj=lcc +lat_0=90 +lon_0=4.36748666666667 +lat_1=49.8333339 +lat_2=51.1666672333333 +x_0=150000.01256 +y_0=5400088.4378 +ellps=intl +units=m +no_defs  "
@@ -502,14 +503,14 @@ Zorg dat je geen bestanden geopend hebt die INLA gebruikt (bijvoorbeeld de raste
 
 ```{r process_all, message=TRUE, warning=TRUE}
 # Apply analyze_species across all TIFF files
-chm_metrics <- chm_metrics_25 #kies 5 (m) of 25  (m) resolutie
+chm_metrics <- chm_metrics_5 #kies 5 (m) of 25  (m) resolutie
 
 process_all_species <- function(dir, chm_metrics) {
   all <- list.files(dir, full.names = TRUE)
   tif <- all[endsWith(all, "_combined.tif")]
   out <- list()
   for (f in tif) {
-    out[[basename(f)]] <- analyze_species_25(f, chm_metrics)#kies opnieuw 5 (m) of 25  (m) resolutie
+    out[[basename(f)]] <- analyze_species_5(f, chm_metrics)#kies opnieuw 5 (m) of 25  (m) resolutie
     gc()
   }
   return(out)

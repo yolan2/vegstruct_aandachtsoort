@@ -115,10 +115,10 @@ crs(chm_ras1) <- crss  # indien nog niet ingesteld
 chm_ras1[chm_ras1 < 0] <- NA
 
 # --- Aggregate to 25 m resolution ---
-chm_ras25 <- aggregate(chm_ras1, fact = 25 / res(chm_ras1)[1], fun = "mean")
+chm_ras25 <- aggregate(chm_ras1, fact = 5 / res(chm_ras1)[1], fun = "mean")
 
 # --- Create raster template aligned with chm_ras25 ---
-template_raster <- rast(ext(chm_ras25), resolution = 25, crs = crs(chm_ras25))
+template_raster <- rast(ext(chm_ras25), resolution = 5, crs = crs(chm_ras25))
 
 
 data_westhoek$x <- as.numeric(as.character(data_westhoek$x))
@@ -137,6 +137,7 @@ grazing_density[is.na(grazing_density)] <- 0
 plot(grazing_density, main = "Begrazingsdichtheid (25m raster)")
 print(grazing_density)
 
+writeRaster(grazing_density, paste0(folder, "grazing_density_5m"), filetype = "GTiff", overwrite = TRUE)
 ```
 
 
@@ -148,8 +149,8 @@ Hier gaan we nu de maandelijkse begrazingsanomalie berekenen (genormaliseerd voo
 chm_ras1 <- rast('wh_vh1m.tif')
 crs(chm_ras1) <- crss
 
-chm_ras25 <- aggregate(chm_ras1, fact = 25 / res(chm_ras1)[1], fun = "mean")
-template_raster <- rast(ext(chm_ras25), resolution = 25, crs = crs(chm_ras25))
+chm_ras25 <- aggregate(chm_ras1, fact = 5 / res(chm_ras1)[1], fun = "mean")
+template_raster <- rast(ext(chm_ras25), resolution = 5, crs = crs(chm_ras25))
 
 data_westhoek$x <- as.numeric(as.character(data_westhoek$x))
 data_westhoek$y <- as.numeric(as.character(data_westhoek$y))

@@ -37,8 +37,8 @@ drive_download(
 veg_vect <- vect(local_gpkg)
 
 
-# --- 2. load grazing raster as template (no extra “)”) ---
-template <- rast("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/grazing_diff_norm_period_03_09.tif")
+# --- 2. load a raster as template (no extra “)”) ---
+template <- rast("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/grazing_diff_norm_period_04_08.tif")
 
 # --- 3. rasterize each Klasse to match grazing raster ---
 classes <- unique(veg_vect$Klasse)
@@ -114,11 +114,12 @@ names(class_stack) <- cls_names
 
 # 2. list grazing rasters
 g_files <- c(
-  apr     = file.path(grazing_folder, "grazing_diff_norm_month_04.tif"),
-  mei     = file.path(grazing_folder, "grazing_diff_norm_month_05.tif"),
-  jun     = file.path(grazing_folder, "grazing_diff_norm_month_06.tif"),
-  jul     = file.path(grazing_folder, "grazing_diff_norm_month_07.tif"),
-  aug     = file.path(grazing_folder, "grazing_diff_norm_month_08.tif")
+  #apr     = file.path(grazing_folder, "grazing_diff_norm_month_04.tif"),
+  #mei     = file.path(grazing_folder, "grazing_diff_norm_month_05.tif"),
+  #jun     = file.path(grazing_folder, "grazing_diff_norm_month_06.tif"),
+  #jul     = file.path(grazing_folder, "grazing_diff_norm_month_07.tif"),
+  #aug     = file.path(grazing_folder, "grazing_diff_norm_month_08.tif"),
+  all_year     = file.path(grazing_folder, "grazing_density_5m")
 )
 
 
