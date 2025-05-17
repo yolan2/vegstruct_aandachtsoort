@@ -45,13 +45,11 @@ chm_metrics_25 <- list(
 
 chm_metrics_25 <- list(
   #mean    = rast(file.path(input_folder, "chm_mean25.tif")),
-  begrazing_maa = rast(file.path(input_folder, "residual_sum_maa.tif")),
   begrazing_apr = rast(file.path(input_folder, "residual_sum_apr.tif")),
   begrazing_mei = rast(file.path(input_folder, "residual_sum_mei.tif")),
   begrazing_jun   = rast(file.path(input_folder, "residual_sum_jun.tif")),
   begrazing_jul  = rast(file.path(input_folder, "residual_sum_jul.tif")),
-  begrazing_aug     = rast(file.path(input_folder, "residual_sum_aug.tif")),
-  begrazing_sep     = rast(file.path(input_folder, "residual_sum_sep.tif"))
+  begrazing_aug     = rast(file.path(input_folder, "residual_sum_aug.tif"))
 )
 
 chm_metrics_5 <- list(
@@ -810,7 +808,6 @@ cat("Written:", csv_file, "\n")
 ```{r}
 
 
-# If you haven’t yet made the positive effects summary, here’s one way:
 library(dplyr)
 library(tibble)
 library(purrr)

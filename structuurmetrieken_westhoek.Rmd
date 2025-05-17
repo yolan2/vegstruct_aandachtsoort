@@ -182,11 +182,41 @@ mean_ras <- app(norm_stack, mean, na.rm = TRUE)
 # --- 5. compute difference-from-mean stack ---
 diff_stack <- norm_stack - mean_ras
 
+month_nums <- as.integer(names(diff_stack))
+
+# select only 03–09
+sel <- which(month_nums >= 4 & month_nums <= 8)
+
+# sum only those layers
+period_anomaly <- app(
+  diff_stack[[sel]],
+  fun   = mean,
+  na.rm = TRUE
+)
+
+# write out
+out_period <- file.path(folder, "grazing_diff_norm_period_04_08.tif")
+writeRaster(
+  period_anomaly,
+  filename = out_period,
+  filetype = "GTiff",
+  overwrite=TRUE
+)
+
+# and plot
+plot(
+  period_anomaly,
+  main = "Anomaly March–September (04–08)",
+  axes = FALSE,
+  box  = FALSE
+)
+
+
 # --- 6. write out each diff raster ---
 for (i in seq_len(nlyr(diff_stack))) {
   m        <- names(diff_stack)[i]
   out_file <- sprintf("grazing_diff_norm_month_%s.tif", m)
-  writeRaster(diff_stack[[i]], filename = paste0(folder, out_file), overwrite = TRUE)
+  writeRaster(diff_stack[[i]]-period_anomaly, filename = paste0(folder, out_file), overwrite = TRUE)
 }
 
 # --- 7. plot all monthly “anomaly” rasters in a multi-panel ---

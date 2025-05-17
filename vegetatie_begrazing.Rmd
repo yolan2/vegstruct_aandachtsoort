@@ -106,22 +106,19 @@ veg_ras_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/veget
 target_crs     <- crss    # your CRS object
 
 
-density = file.path(grazing_folder, "grazing_diff_norm_period_03_09.tif")
 # 1. load classe predictors
-cls_files   <- c(list.files(veg_ras_folder, pattern="\\.tif$", full.names=TRUE), density = density)
+cls_files   <- c(list.files(veg_ras_folder, pattern="\\.tif$", full.names=TRUE))
 cls_names   <- sub("\\.tif$","", basename(cls_files))
 class_stack <- rast(cls_files)
 names(class_stack) <- cls_names
 
 # 2. list grazing rasters
 g_files <- c(
-  maa     = file.path(grazing_folder, "grazing_diff_norm_month_03.tif"),
   apr     = file.path(grazing_folder, "grazing_diff_norm_month_04.tif"),
   mei     = file.path(grazing_folder, "grazing_diff_norm_month_05.tif"),
   jun     = file.path(grazing_folder, "grazing_diff_norm_month_06.tif"),
   jul     = file.path(grazing_folder, "grazing_diff_norm_month_07.tif"),
-  aug     = file.path(grazing_folder, "grazing_diff_norm_month_08.tif"),
-  sep     = file.path(grazing_folder, "grazing_diff_norm_month_09.tif")
+  aug     = file.path(grazing_folder, "grazing_diff_norm_month_08.tif")
 )
 
 
