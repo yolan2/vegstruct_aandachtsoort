@@ -208,6 +208,39 @@ par(mfrow = c(1,1))  # reset
 
 ```
 
+```{r}
+# get numeric month from layer names
+month_nums <- as.integer(names(diff_stack))
+
+# select only 03–09
+sel <- which(month_nums >= 3 & month_nums <= 9)
+
+# sum only those layers
+period_anomaly <- app(
+  diff_stack[[sel]],
+  fun   = sum,
+  na.rm = TRUE
+)
+
+# write out
+out_period <- file.path(folder, "grazing_diff_norm_period_03_09.tif")
+writeRaster(
+  period_anomaly,
+  filename = out_period,
+  filetype = "GTiff",
+  overwrite=TRUE
+)
+
+# and plot
+plot(
+  period_anomaly,
+  main = "Anomaly March–September (03–09)",
+  axes = FALSE,
+  box  = FALSE
+)
+
+```
+
 
 
 
@@ -272,6 +305,9 @@ plot(grad_magnitude,
 
 
 ```
+
+
+
 Hier gaan we op basis van de eerste afgeleide van de Gaussian (een meer outlier robuuste CHM) een gradient berekenen. Dit is een techniek die vaak gebruikt wordt in beeldverwerking om randen te detecteren. Dit lijkt ook beter te werken dan de tweede afgeleide. Het moet niet altijd mathematisch complexer zijn ;-)
 ```{r}
 
