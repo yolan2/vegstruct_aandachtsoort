@@ -320,7 +320,7 @@ q1_5m <- aggregate(chm_ras1,fact = 5,fun  = function(x, na.rm=TRUE) quantile(x, 
 gradmag_aggr[q1_5m > 0.4] <- 0
 
 #gradmag_aggr[chm_ras5 > 0.85] <- 0
-plot(gradmag_aggr, main="Gradient‐of‐Gaussian Magnitude (Aggregated)")
+plot(gradmag_aggr, main="Gradient of Gaussian Magnitude (Aggregated)")
 plot(chm_ras1, 
      main = "CHM Raster", 
      col = blue_yellow_palette(100))

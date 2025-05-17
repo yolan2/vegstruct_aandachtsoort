@@ -1,0 +1,224 @@
+---
+title: "vegetatiekaart"
+author: "Yolan Bosteels"
+date: "2025-05-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r cars}
+# load terra
+library(terra)
+
+# --- folders ---
+vegetation_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/vegetatieklasses"
+veg_path       <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/vegetatiekaart.gpkg"
+grazing_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken"
+
+# --- 1. load vector ---
+veg_vect <- vect(veg_path)
+
+# --- 2. load grazing raster as template (no extra “)”) ---
+template <- rast("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/grazing_density.tif")
+
+# --- 3. rasterize each Klasse to match grazing raster ---
+classes <- unique(veg_vect$Klasse)
+
+for (cls in classes) {
+  # subset polygons
+  sub_vect <- veg_vect[veg_vect$Klasse == cls, ]
+  
+  # 3a) rasterize with fun="count" → counts of polygons per cell
+  r_count <- rasterize(
+    x          = sub_vect,
+    y          = template,
+    fun        = "count",
+    background = 0
+  )
+  
+  # 3b) binarize to 0/1 if desired:
+  r_cls <- classify(
+    r_count,
+    matrix(c(
+      0,   0,   0,
+      1, Inf, 1
+    ), ncol=3, byrow=TRUE)
+  )
+  # —OR— to keep raw counts, just use r_count:
+  # r_cls <- r_count
+
+  # safe filename
+  cls_safe <- gsub("[^A-Za-z0-9_]", "_", cls)
+  out_fname <- paste0(cls_safe, ".tif")
+  
+  # write GeoTIFF into grazing_folder
+  writeRaster(
+    r_cls,
+    filename  = file.path(vegetation_folder, out_fname),
+    filetype  = "GTiff",
+    datatype  = "INT2U",  # 0/1 unsigned integer if binarized (or counts up to 65535)
+    overwrite = TRUE
+  )
+  
+  message("Written: ", file.path(vegetation_folder, out_fname))
+}
+
+
+```
+
+
+
+```{r pressure, echo=FALSE}
+library(terra)
+library(INLA)
+library(data.table)
+library(spdep)    # for knearneigh, knn2nb, nb2mat
+library(MASS)    # for boxcox
+
+#──────────────────────────────────────────────────────────────────────────────
+# Loop over all grazing rasters, two‐part INLA, then residual of the sum
+#──────────────────────────────────────────────────────────────────────────────
+crss = " +proj=lcc +lat_0=90 +lon_0=4.36748666666667 +lat_1=49.8333339 +lat_2=51.1666672333333 +x_0=150000.01256 +y_0=5400088.4378 +ellps=intl +units=m +no_defs  "
+
+# 0. folders + CRS
+grazing_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken"
+veg_ras_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/vegetatieklasses"
+target_crs     <- crss    # your CRS object
+
+# 1. load classe predictors
+cls_files   <- list.files(veg_ras_folder, pattern="\\.tif$", full.names=TRUE)
+cls_names   <- sub("\\.tif$","", basename(cls_files))
+class_stack <- rast(cls_files)
+names(class_stack) <- cls_names
+
+# 2. list grazing rasters
+g_files <- c(
+  maa     = file.path(grazing_folder, "grazing_diff_norm_month_03.tif"),
+  apr     = file.path(grazing_folder, "grazing_diff_norm_month_04.tif"),
+  mei     = file.path(grazing_folder, "grazing_diff_norm_month_05.tif"),
+  jun     = file.path(grazing_folder, "grazing_diff_norm_month_06.tif"),
+  jul     = file.path(grazing_folder, "grazing_diff_norm_month_07.tif"),
+  aug     = file.path(grazing_folder, "grazing_diff_norm_month_08.tif"),
+  sep     = file.path(grazing_folder, "grazing_diff_norm_month_09.tif"),
+  density = file.path(grazing_folder, "grazing_density.tif")
+)
+
+# 3. process each grazing metric
+for(gname in names(g_files)) {
+  message(">>> ", gname)
+
+  # 3a) load & aggregate to 25 m  
+  ras <- rast(g_files[gname])
+  crs(ras) <- target_crs
+
+  # 3b) binary presence/absence raster  
+  ras_bin <- ifel(ras > 0, 1, NA)  
+
+  # 3c) estimate Box–Cox λ on the positives  
+  vals_pos <- values(ras, na.rm=TRUE)
+  vals_pos <- vals_pos[vals_pos > 0]
+  if(length(vals_pos) < 20) {
+    warning("  too few positives—skipping ", gname); next
+  }
+  bc     <- boxcox(vals_pos ~ 1, plotit=FALSE)
+  lambda <- bc$x[which.max(bc$y)]
+  message(sprintf("  λ = %.3f", lambda))
+
+  # 3d) extract into a data.table  
+  stk <- c(class_stack, ras_bin, ras)
+  names(stk) <- c(cls_names, "y_bin", "y_cont")
+  dt  <- as.data.table(values(stk, dataframe=TRUE, na.rm=FALSE))
+  xy  <- as.data.table(xyFromCell(stk, seq_len(ncell(stk))))
+  dt  <- cbind(xy, dt)[!is.na(y_bin)]
+  setnames(dt, "y_cont", "obs")
+
+  # —— NEW: drop any class predictors with no occurrences —— 
+  present_cls <- cls_names[sapply(cls_names, function(cl) any(dt[[cl]] == 1, na.rm=TRUE))]
+  if(length(present_cls) == 0) {
+    warning("  no classes present in ", gname, " — skipping model")
+    next
+  }
+  message("  using classes: ", paste(present_cls, collapse=", "))
+
+  # 3e) build neighbour graph for Besag  
+  coords <- as.matrix(dt[, .(x,y)])
+  nb     <- knearneigh(coords, k=4) |> knn2nb(sym=TRUE)
+  W      <- as(nb2mat(nb, style="B"), "sparseMatrix")
+  diag(W) <- 0
+  dt[, spatial_id := .I]
+  g     <- inla.read.graph(W)
+
+  # 3f) fit binary logistic  
+  #    only include `present_cls` in the formula
+  bin_formula <- as.formula(
+    paste0("y_bin ~ 1 + f(spatial_id, model='besag', graph=g)",
+           " + ", paste(present_cls, collapse=" + "))
+  )
+  mb <- inla(
+    formula         = bin_formula,
+    data            = dt,
+    family          = "binomial",
+    control.compute = list(dic=TRUE, waic=TRUE)
+  )
+  dt[, fitted_bin := mb$summary.fitted.values[,"mean"]]
+
+  # 3g) fit positive Gaussian on transformed  
+  dtp <- dt[obs > 0]
+  if(nrow(dtp)==0) {
+    warning("  no positives—skipping positive model")
+    dtp[, fitted_pos_orig := 0]
+  } else {
+    if(abs(lambda) < 1e-6) {
+      dtp[, y_tr := log(obs)]
+    } else {
+      dtp[, y_tr := (obs^lambda - 1)/lambda]
+    }
+    pos_formula <- as.formula(
+      paste0("y_tr ~ 1 + f(spatial_id, model='besag', graph=g)",
+             " + ", paste(present_cls, collapse=" + "))
+    )
+    mp <- inla(
+      formula          = pos_formula,
+      data             = dtp,
+      family           = "gaussian",
+      control.family   = list(link="identity"),
+      control.compute  = list(dic=TRUE, waic=TRUE)
+    )
+    dtp[, fitted_tr := mp$summary.fitted.values[,"mean"]]
+
+    # back‐transform to original grazing units
+    if(abs(lambda) < 1e-6) {
+      dtp[, fitted_pos_orig := exp(fitted_tr)]
+    } else {
+      dtp[, fitted_pos_orig := (fitted_tr * lambda + 1)^(1/lambda)]
+    }
+  }
+
+  # 3h) merge back so everyone has fitted_pos_orig (zero where absent)
+  dt[, fitted_pos_orig := 0]
+  dt[dtp, on="spatial_id", fitted_pos_orig := fitted_pos_orig]
+
+  # 3i) sum the two fitted parts and compute residual  
+  dt[, fitted_sum := fitted_bin + fitted_pos_orig]
+  dt[, resid_sum  := obs - fitted_sum]
+
+  # 3j) rasterize resid_sum back to the grazing grid  
+  pts   <- vect(dt[, .(x,y,resid_sum)], geom=c("x","y"), crs=crs(ras))
+  r_res <- rasterize(pts, ras, field="resid_sum", background=NA)
+
+  # 3k) write out  
+  out_fn <- file.path(grazing_folder, sprintf("residual_sum_%s.tif", gname))
+  writeRaster(r_res, filename=out_fn, filetype="GTiff",
+              datatype="FLT4S", overwrite=TRUE)
+  message("  → wrote ", out_fn, "\n")
+}
+
+message("All done!") 
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
