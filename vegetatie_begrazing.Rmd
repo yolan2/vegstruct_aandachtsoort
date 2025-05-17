@@ -1,5 +1,5 @@
 ---
-title: "vegetatiekaart"
+title: "vegetatie_analysis"
 author: "Yolan Bosteels"
 date: "2025-05-17"
 output: html_document
@@ -9,21 +9,36 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+Eerst laden we de benodigde packages en de vegetatiekaart in. We schrijven voor elk vegetatietype een raster (geotiff) uit. Dit raster is een binair raster dat aangeeft of een vegetatietype aanwezig is in een cel of niet. 
 
 ```{r cars}
-# load terra
+
 library(terra)
+library(googledrive)
 
 # --- folders ---
 vegetation_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/vegetatieklasses"
-veg_path       <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/vegetatiekaart.gpkg"
+
 grazing_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken"
 
-# --- 1. load vector ---
-veg_vect <- vect(veg_path)
+
+
+
+# 0. download the .gpkg from Drive to a local file
+drv_id <- as_id("1sqQMS6AcEkRAA9wgaqhI-FtdsCcwzSDF")
+local_gpkg <- "vegetatiekaart.gpkg"
+drive_download(
+  file      = drv_id,
+  path      = local_gpkg,
+  overwrite = TRUE
+)
+
+# 1. now load it with terra
+veg_vect <- vect(local_gpkg)
+
 
 # --- 2. load grazing raster as template (no extra “)”) ---
-template <- rast("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/grazing_density.tif")
+template <- rast("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/grazing_diff_norm_period_03_09.tif")
 
 # --- 3. rasterize each Klasse to match grazing raster ---
 classes <- unique(veg_vect$Klasse)
@@ -32,7 +47,7 @@ for (cls in classes) {
   # subset polygons
   sub_vect <- veg_vect[veg_vect$Klasse == cls, ]
   
-  # 3a) rasterize with fun="count" → counts of polygons per cell
+  # 3a) rasterize with fun="count" → counts of polygons per cell (in principe altijd = 1 want polygonen overlappen niet)
   r_count <- rasterize(
     x          = sub_vect,
     y          = template,
@@ -70,6 +85,7 @@ for (cls in classes) {
 
 ```
 
+Hier gebruiken we min of meer hetzelfde model als model en modelanalyse om op basis van ruimtelijke autocorrelatie en vegetatietype de begrazingsdruk te voorspellen. Het deel dat niet door deze componenten kan voorspeld worden is ons residu. Dit slaan we op. Door in een volgende stap dit residu te gaan correleren aan het voorkomen van individuele soorten krijgen we een beeld van de onafhankelijke invloed van elke individuele soort, althans dat is de hypothese. 
 
 
 ```{r pressure, echo=FALSE}
@@ -89,8 +105,10 @@ grazing_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtem
 veg_ras_folder <- "C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R/vegetatieklasses"
 target_crs     <- crss    # your CRS object
 
+
+density = file.path(grazing_folder, "grazing_diff_norm_period_03_09.tif")
 # 1. load classe predictors
-cls_files   <- list.files(veg_ras_folder, pattern="\\.tif$", full.names=TRUE)
+cls_files   <- c(list.files(veg_ras_folder, pattern="\\.tif$", full.names=TRUE), density = density)
 cls_names   <- sub("\\.tif$","", basename(cls_files))
 class_stack <- rast(cls_files)
 names(class_stack) <- cls_names
@@ -103,9 +121,9 @@ g_files <- c(
   jun     = file.path(grazing_folder, "grazing_diff_norm_month_06.tif"),
   jul     = file.path(grazing_folder, "grazing_diff_norm_month_07.tif"),
   aug     = file.path(grazing_folder, "grazing_diff_norm_month_08.tif"),
-  sep     = file.path(grazing_folder, "grazing_diff_norm_month_09.tif"),
-  density = file.path(grazing_folder, "grazing_density.tif")
+  sep     = file.path(grazing_folder, "grazing_diff_norm_month_09.tif")
 )
+
 
 # 3. process each grazing metric
 for(gname in names(g_files)) {

@@ -43,6 +43,17 @@ chm_metrics_25 <- list(
   begrazing = rast(file.path(input_folder, "grazing_density.tif"))
 )
 
+chm_metrics_25 <- list(
+  #mean    = rast(file.path(input_folder, "chm_mean25.tif")),
+  begrazing_maa = rast(file.path(input_folder, "residual_sum_maa.tif")),
+  begrazing_apr = rast(file.path(input_folder, "residual_sum_apr.tif")),
+  begrazing_mei = rast(file.path(input_folder, "residual_sum_mei.tif")),
+  begrazing_jun   = rast(file.path(input_folder, "residual_sum_jun.tif")),
+  begrazing_jul  = rast(file.path(input_folder, "residual_sum_jul.tif")),
+  begrazing_aug     = rast(file.path(input_folder, "residual_sum_aug.tif")),
+  begrazing_sep     = rast(file.path(input_folder, "residual_sum_sep.tif"))
+)
+
 chm_metrics_5 <- list(
   #shannon = rast(file.path(input_folder, "chm_shannon.tif")),
   #mean    = rast(file.path(input_folder, "chm_ras5.tif")),
@@ -308,7 +319,7 @@ analyze_species_5 <- function(path, chm_metrics) {
 ```
 
 
-Hier testen we of een lineaire of exponentiele regressie het best werkt. 
+Hier testen we of een lineaire of exponentiele regressie het best werkt. Weet dat linear hier niet echt helemaal klopt.
 ```{r}
 
 library(terra)
