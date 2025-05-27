@@ -339,7 +339,7 @@ plot(grad_magnitude,
 
 
 
-Hier gaan we op basis van de eerste afgeleide van de Gaussian (een meer outlier robuuste CHM) een gradient berekenen. Dit is een techniek die vaak gebruikt wordt in beeldverwerking om randen te detecteren. Dit lijkt ook beter te werken dan de tweede afgeleide. Het moet niet altijd mathematisch complexer zijn ;-)
+Hier gaan we op basis van de eerste afgeleide van de Gaussian een gradient berekenen. Dit is een techniek die vaak gebruikt wordt in beeldverwerking om randen te detecteren. Dit lijkt ook beter te werken dan de tweede afgeleide. Het moet niet altijd mathematisch complexer zijn ;-)
 ```{r}
 
 

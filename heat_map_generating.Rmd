@@ -99,7 +99,7 @@ species_points_cleaned <- filtered_species_points[keep, ]
 
 ```
 
-# 6. Aggregate Species Points by Year; hier gaan in essentie kijken waar er gekarteerd is. Dit door20m buffers te trekken rond elk punt van elk jaar en die allemaal te mergen.
+# 6. Aggregate Species Points by Year; hier gaan in essentie kijken waar er gekarteerd is. 
 
 ```{r aggregate-points}
 filtered_species_points <- filtered_species_points %>%

@@ -27,6 +27,7 @@ library(readxl)
 library(dplyr)
 library(googlesheets4)
 library(googledrive)
+
 ```
 
 # 2. Kies hier je werkmap en typ 1 om authenticatie te starten of 2 als je al verbonden bent
@@ -103,8 +104,12 @@ drive_download(
   overwrite = TRUE
 )
 
-# 1. Make sure sf is loaded
-library(sf)
+tmp_dir <- tempfile()
+dir.create(tmp_dir)
+
+# 3. Unzip naar die folder
+unzip(tmp_zip, exdir = tmp_dir)
+
 
 # 2. Inspect what actually got unzipped
 file_list <- list.files(tmp_dir, recursive = TRUE)

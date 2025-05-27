@@ -1,0 +1,1717 @@
+
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo      = TRUE,
+  warning   = TRUE,
+  message   = TRUE,
+  cache     = FALSE
+)
+```
+
+# 1. Load Libraries
+
+```{r libraries}
+library(sf)
+library(raster)
+library(readxl)
+library(dplyr)
+library(googlesheets4)
+library(googledrive)
+library(vegan)
+library(spdep)
+library(ape)
+library(stringr)
+library(purrr)
+library(exactextractr)
+library(spatstat)
+library(terra)
+library(INLA)
+library(data.table)
+library(spdep)    # for knearneigh, knn2nb, nb2mat
+library(MASS)
+library(tidyverse)
+library(INLA)
+library(data.table)
+library(Matrix)
+```
+
+# 2. Kies hier je werkmap en typ 1 om authenticatie te starten of 2 als je al verbonden bent
+
+```{r wd-and-auth}
+drive_auth()
+```
+
+# 3. Canopy Height Raster (25 cm → 1 m)
+
+```{r canopy-processing}
+tmp_tif <- tempfile(fileext = ".tif")
+drive_download(
+  as_id("1VMAoB3_HEibMBnEFBDe06hl1PSz7sE1O"),
+  path      = tmp_tif,
+  overwrite = TRUE
+)
+
+canopy_height_25cm <- raster(tmp_tif)
+canopy_height_1m   <- aggregate(
+  x     = canopy_height_25cm,
+  fact  = 4,
+  fun   = mean,
+  na.rm = TRUE
+)
+
+writeRaster(
+  canopy_height_1m,
+  filename  = "wh_vh1m.tif",
+  format    = "GTiff",
+  overwrite = TRUE
+)
+
+canopy_height_1m
+```
+
+# 4. Load begrazing Data (.RData)
+
+```{r load-RData}
+tmp_begrazing <- tempfile(fileext = ".RData")
+drive_download(
+  as_id("14gUaFIpvGHy9dYht9vwvEbvPyUbxAQXl"),
+  path      = tmp_begrazing,
+  overwrite = TRUE
+)
+load(tmp_begrazing)
+```
+
+# 5. Species Points
+
+```{r species-points}
+tmp_sp <- tempfile(fileext = ".xlsx")
+drive_download(
+  as_id("1-nkybFo964a5rNrvo7hgwrCWHXl-YQaP"),
+  path      = tmp_sp,
+  type      = "xlsx",
+  overwrite = TRUE
+)
+
+species_points <- read_excel(tmp_sp) |>  
+  st_as_sf(coords = c("X_Lambert", "Y_Lambert"), crs = 31370) |>  
+  st_transform(crs = st_crs(canopy_height_1m))
+
+tmp_lookup <- tempfile(fileext = ".xlsx")
+
+# download the Google Sheet as xlsx
+drive_download(
+  as_id("1-hlCyqBvBbhOLiPWDGNZPa20i8dRq0yr"),  # your sheet’s file ID
+  path      = tmp_lookup,
+  type      = "xlsx",
+  overwrite = TRUE
+)
+
+# read the “soorten” sheet (you can also use sheet = 2 if you prefer index)
+lookup_table <- read_excel(tmp_lookup, sheet = "Soorten")
+abundanties <- read_excel(tmp_lookup, sheet = "Abundantie")
+
+```
+
+
+# 7. Polygon Data
+
+```{r polygon-data}
+tmp_zip <- tempfile(fileext = ".zip")
+drive_download(
+  as_id("14t1VIBSYKFY1ra3okvX7BtdW7fnp_om1"),
+  path      = tmp_zip,
+  overwrite = TRUE
+)
+
+tmp_dir <- tempfile()
+dir.create(tmp_dir)
+
+# 3. Unzip naar die folder
+unzip(tmp_zip, exdir = tmp_dir)
+
+
+# 2. Inspect what actually got unzipped
+file_list <- list.files(tmp_dir, recursive = TRUE)
+print(file_list)
+
+# 3. Now pick out shapefiles in any sub-folder
+shp_files <- list.files(tmp_dir, pattern = "\\.shp$", full.names = TRUE, recursive = TRUE)
+print(shp_files)
+
+# 4. If you now see one or more .shp paths, read the first one:
+if (length(shp_files) == 0) {
+  stop("No .shp files found under ", tmp_dir)
+} else {
+  polygon_data <- st_read(shp_files[1])
+}
+
+# 5. (Optional) Check its CRS / geometry
+st_crs(polygon_data)
+plot(polygon_data["geometry"])
+
+polygon_data$Mediaan <- abundanties$Mediaan[match(polygon_data$ABUNDANTIE, abundanties$Code)]
+
+  
+```
+
+# 8. Data Processing & Export
+
+```{r data-processing}
+# 1. Koppel soortcodes
+species_points$Mediaan <- abundanties$Mediaan[match(species_points$ABUND, abundanties$Code)]
+
+# 2. Maak extent-polygoon van raster op juiste manier
+r_ext <- st_as_sfc(st_bbox(canopy_height_1m)) |> st_sf()
+
+# 3. Zorg dat beide dezelfde CRS hebben
+species_points <- st_transform(species_points, crs = st_crs(r_ext))
+
+# 4. Selecteer enkel punten binnen de extent
+species_points <- species_points[st_intersects(species_points, r_ext, sparse = FALSE),]
+sf::st_write(
+  species_points,
+  "species_points_processed.gpkg",
+  layer        = "species_points_processed",
+  delete_layer = TRUE
+)
+
+
+polygon_data <- st_transform(polygon_data, crs = st_crs(r_ext))
+polygon_data <- polygon_data[st_intersects(polygon_data, r_ext, sparse=FALSE), ]
+
+st_write(
+  polygon_data,
+  "plant_vlakken_processed.shp",
+  row.names = FALSE,
+  append    = FALSE
+)
+
+message("✅ Data pre-processing completed.")
+```
+```{r making the 5m vegetation height raster}
+crss = " +proj=lcc +lat_0=90 +lon_0=4.36748666666667 +lat_1=49.8333339 +lat_2=51.1666672333333 +x_0=150000.01256 +y_0=5400088.4378 +ellps=intl +units=m +no_defs  "
+
+cell_size <- 5 #default celgroote voor dit project
+chm_ras1 = raster('wh_vh1m.tif', crs = crss)
+chm_ras1[chm_ras1 < 0] <- NA
+reference_raster = aggregate(chm_ras1, fun = mean, fact = cell_size/res(chm_ras1))
+chm_ras5 <- reference_raster
+plant_polygons <- polygon_data
+```
+
+
+# 2. Resample Raster to Match 1m Resolution
+
+```{r resample-raster}
+# Make sure both layers have the same CRS as the reference raster
+species_points <- st_transform(species_points, crs(reference_raster))
+plant_polygons <- st_transform(plant_polygons, crs(reference_raster))
+
+```
+
+# 3. Filter Points and Polygons by Year and Type
+
+```{r filter-points-polygons}
+filtered_species_points <- species_points %>%
+  mutate(JAAR = as.numeric(JAAR)) %>%
+  filter(JAAR > 2014, TYPE == "Aandachtssoort")
+
+filtered_plant_polygons <- plant_polygons %>%
+  mutate(JAAR = as.numeric(JAAR)) %>%
+  filter(JAAR > 2014)
+
+```
+
+# 4. Remove Overlapping Polygons per Species
+
+```{r remove-overlapping}
+plant_polygons_nodup <- filtered_plant_polygons %>%
+  group_by(SOORTSCODE) %>%
+  filter(!duplicated(st_as_binary(geometry)))
+
+```
+
+# 5. Spatial Join: Species Points with Plant Polygons and remove points in plant_polygons
+
+```{r spatial-join}
+# 1) compute the intersections: for each point, which polygon indices it intersects?
+ints <- st_intersects(filtered_species_points, plant_polygons_nodup)
+
+# 2) build a logical keep‐vector: TRUE if
+#    • the point hits no polygons at all, OR
+#    • none of the intersected polygons has the same SOORTSCODE
+keep <- mapply(function(pt_code, poly_i){
+  if (length(poly_i) == 0) {
+    # point falls in no polygon → keep it
+    return(TRUE)
+  }
+  # get the polygon codes for the ones it does hit
+  poly_codes <- plant_polygons_nodup$SOORTSCODE[poly_i]
+  # keep only if *none* match
+  !any(poly_codes == pt_code, na.rm = TRUE)
+},
+filtered_species_points$SOORTSCODE,
+ints)
+
+# 3) subset your original sf object
+species_points_cleaned <- filtered_species_points[keep, ]
+
+```
+
+# 6. Aggregate Species Points by Year; hier gaan in essentie kijken waar er gekarteerd is. 
+
+```{r aggregate-points}
+filtered_species_points <- filtered_species_points %>%
+  st_set_geometry("geom")
+
+# 2) buffer by 20m and union per JAAR, keeping only the original columns
+species_points_buffered <- filtered_species_points %>%
+  group_by(JAAR) %>%
+  summarise(
+    # copy the first value of every attribute except the geometry
+    across(.cols = -geom, .fns = first),
+    # now buffer the true geometry and union it
+    geom = st_union(st_buffer(geom, 20)),
+    .groups = "drop"
+  )
+
+```
+
+# 7. Buffer Resulting Polygons (1.5 meters)
+
+```{r buffer-polygons}
+buffered_polygons <- st_buffer(species_points_buffered, dist = 1.5)
+```
+
+# 8. Union Polygons and Summarize YEARs
+
+```{r union-polygons}
+unioned_polygons <- buffered_polygons %>%
+  st_union() %>%
+  st_cast("POLYGON")
+
+# Dummy YEAR_List column (in real use: summarize intersected YEARs)
+unioned_polygons_sf <- st_sf(geometry = unioned_polygons) %>%
+  mutate(YEAR_List = NA_character_)
+```
+
+# 9. Most Common Year Assignment per Polygon
+
+```{r most-common-year}
+# Spatial join points to unioned polygons
+points_with_union <- st_join(filtered_species_points, unioned_polygons_sf, join = st_intersects)
+
+# Add polygon IDs
+unioned_polygons_sf$poly_id <- seq_len(nrow(unioned_polygons_sf))
+points_with_union$poly_id <- st_nearest_feature(filtered_species_points, unioned_polygons_sf)
+
+# Find most common JAAR for each polygon
+most_common_years <- points_with_union %>%
+  st_drop_geometry() %>%
+  group_by(poly_id, JAAR) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(poly_id) %>%
+  slice_max(order_by = count, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Merge back
+unioned_polygons_sf <- unioned_polygons_sf %>%
+  left_join(most_common_years, by = "poly_id") %>%
+  rename(Most_Common_JAAR = JAAR)
+```
+
+# 10. Spatial Join Points and Polygons; Remove Mismatches
+
+```{r filter-by-most-common-year}
+points_with_most_common <- st_join(filtered_species_points, unioned_polygons_sf)
+
+final_points <- points_with_most_common %>%
+  filter(is.na(Most_Common_JAAR) | JAAR == Most_Common_JAAR)
+```
+
+# 11. Kernel Density Estimation for Each Species: (duurt erg lang, warnings zijn voor punten met identieke coordinaten. Gezien dat hier geen foute data is mag je deze warnings negeren)
+
+```{r kernel-density}
+# Get unique species codes
+species_list <- unique(final_points$SOORTSCODE)
+
+# Initialize empty list to store KDE rasters
+kde_results <- list()
+species_list_valid = list()
+
+# Iterate over each species
+for (species in species_list) {
+  
+  species_pts <- final_points %>%
+    filter(SOORTSCODE == species, !is.na(Mediaan))|>
+    st_transform(crs(chm_ras5))
+  
+  if (nrow(species_pts) >= 30) {
+    species_list_valid <- c(species_list_valid, species)
+    coords <- st_coordinates(species_pts)
+    weights <- species_pts$Mediaan  # use Mediaan field for weights
+
+    # Extract extent and resolution from chm_ras5
+    ext_ras <- ext(chm_ras5)
+    res_ras <- res(chm_ras5)   # cell size (should be 5, 5)
+    
+    # Define window based on chm_ras5 extent
+    window <- owin(
+      xrange = c(ext_ras[1], ext_ras[2]),
+      yrange = c(ext_ras[3], ext_ras[4])
+    )
+    
+    # Create ppp object using *that exact window*
+    ppp_obj <- ppp(x = coords[,1], y = coords[,2], window = window, marks = weights)
+
+    # Create an im object with exact chm_ras5 grid
+    xrange <- c(ext_ras[1], ext_ras[2])
+    yrange <- c(ext_ras[3], ext_ras[4])
+    nx <- ncol(chm_ras5)
+    ny <- nrow(chm_ras5)
+    
+    # Create the pixel grid for KDE
+    template_im <- im(
+      matrix(0, nrow = ny, ncol = nx),
+      xcol = seq(xrange[1] + res_ras[1]/2, xrange[2] - res_ras[1]/2, length.out = nx),
+      yrow = seq(yrange[1] + res_ras[2]/2, yrange[2] - res_ras[2]/2, length.out = ny)
+    )
+
+    
+    # Run KDE using that exact pixel grid
+    dens <- density(
+      ppp_obj,
+      weights = marks(ppp_obj),
+      sigma = 2,
+      at = "pixels",
+      edge = TRUE,
+      dimyx = c(ny, nx),
+      xy = list(x = template_im$xcol, y = template_im$yrow)
+    )
+
+
+
+    # Rescale to match total number of individuals
+    total_individuals <- sum(weights, na.rm = TRUE)
+    pixel_sum <- sum(dens$v, na.rm = TRUE)
+
+    if (pixel_sum > 0) {
+      dens$v <- dens$v * (total_individuals / pixel_sum)
+    }
+
+    # Convert to terra raster and store
+    kde_results[[species]] <- rast(dens)
+    
+    # Print progress
+    cat("Processed species:", species, "-", nrow(species_pts), "points\n")
+    
+  } else {
+    cat("Skipped species:", species, "- not enough points (", nrow(species_pts), ")\n")
+  }
+}
+
+```
+
+# 12. Rasterize Polygons per Species
+
+```{r rasterize-polygons}
+reference_raster <- rast(reference_raster)  # ensure it's a SpatRaster
+
+polygon_rasters <- map(species_list_valid, function(species) {
+  species_poly <- plant_polygons_nodup %>% filter(SOORTSCODE == species)
+  
+  if (nrow(species_poly) > 0) {
+    # Bereken kolom met dichtheid (mediaan per m²)
+    species_poly$dichtheid <- species_poly$Mediaan / species_poly$Shape_Area
+
+    rast_out <- rasterize(
+      vect(species_poly),
+      reference_raster,
+      field = "dichtheid",
+      fun = "mean"
+    )
+
+    # Omzetten naar abundantie per 25 m² (5x5 raster)
+    rast_out <- rast_out * 25
+
+    rast_out
+  } else {
+    NULL
+  }
+})
+
+
+```
+
+# 13. Combine Point and Polygon Rasters per Species and write file
+
+```{r combine-rasters}
+
+combined_rasters <- map(species_list_valid, function(species) {
+  pt <- kde_results[[species]]
+  poly <- polygon_rasters[[species]]
+  if (is.null(pt)) {
+    return(NULL)
+  }
+  else{
+
+    if (!is.null(pt)) pt <- ifel(is.na(pt), 0, pt)
+    if (!is.null(poly)) poly <- ifel(is.na(poly), 0, poly)
+  
+    if (!is.null(pt) & !is.null(poly)) {
+      raster_layer <- pt + poly
+    } else if (!is.null(pt)) {
+      raster_layer <- pt
+    } else if (!is.null(poly)) {
+      raster_layer <- poly
+    } else {
+      raster_layer <- NULL
+    }
+  
+    if (!is.null(raster_layer)) {
+      writeRaster(raster_layer,
+                  filename =file.path(paste0(species,"_combined.tif")),
+                  overwrite = TRUE)
+    }}
+
+  raster_layer
+})
+names(combined_rasters) <- species_list_valid
+
+```
+
+# 14. Plot an Example Raster (gewoon om te tonen wat het resultaat is)
+
+```{r plot-example}
+species_name <- names(compact(combined_rasters))[2]
+plot(first_valid, main = paste("Combined raster for", species_name))
+
+plot(kde_results[[species_name]])
+```
+INLADEN RASTERS
+```{r}
+crss = " +proj=lcc +lat_0=90 +lon_0=4.36748666666667 +lat_1=49.8333339 +lat_2=51.1666672333333 +x_0=150000.01256 +y_0=5400088.4378 +ellps=intl +units=m +no_defs  "
+
+cell_size <- 5 #default celgroote voor dit project
+
+chm_ras1 = raster('wh_vh1m.tif', crs = crss)
+chm_ras1[chm_ras1 < 0] <- NA
+
+chm_ras5 = aggregate(chm_ras1, fun = mean, fact = cell_size/res(chm_ras1))
+
+
+classes_df = c(-Inf,1, 1,1,2,2,2,5,3,5,Inf,4)
+classes_chm = matrix(classes_df,ncol = 3, byrow=T)
+classes_df = c(-Inf, 0,1, 0, 0.25,2, 0.25,0.5,3, 0.5,0.75,4,0.75,1,5)
+
+
+chm_clas5 = reclassify(chm_ras5, classes_chm)
+
+
+
+
+```
+als je gdrive nog niet geauthenticeerd is ga je hier vastlopen. Run dan even drive_auth() in je console en probeer opnieuw.
+
+```{r}
+tmp_begrazing <- tempfile(fileext = ".RData")
+drive_download(
+  as_id("14gUaFIpvGHy9dYht9vwvEbvPyUbxAQXl"),
+  path      = tmp_begrazing,
+  overwrite = TRUE
+)
+load(tmp_begrazing)
+```
+
+
+GRAZING DENSITY: Hier wordt de begrazingsdata geagregeerd tot op 25x25m. Een correcte filtering van deze data dient nog te gebeuren!!!
+
+```{r}
+chm_ras1 <- rast('wh_vh1m.tif')
+crs(chm_ras1) <- crss  # indien nog niet ingesteld
+chm_ras1[chm_ras1 < 0] <- NA
+
+# --- Aggregate to 25 m resolution ---
+chm_ras25 <- aggregate(chm_ras1, fact = 5 / res(chm_ras1)[1], fun = "mean")
+
+# --- Create raster template aligned with chm_ras25 ---
+template_raster <- rast(ext(chm_ras25), resolution = 5, crs = crs(chm_ras25))
+
+
+data_westhoek$x <- as.numeric(as.character(data_westhoek$x))
+data_westhoek$y <- as.numeric(as.character(data_westhoek$y))
+
+# Maak SpatVector
+data_vect <- vect(data_westhoek, geom = c("x", "y"), crs = crss)
+
+# --- Rasterize: count number of points per 25x25 m cell ---
+grazing_density <- rasterize(data_vect, template_raster, fun = "count", background = 0)
+
+# --- Fix any NA to 0 ---
+grazing_density[is.na(grazing_density)] <- 0
+
+# --- Plot result ---
+plot(grazing_density, main = "Begrazingsdichtheid (25m raster)")
+print(grazing_density)
+
+writeRaster(grazing_density, "grazing_density_5m", filetype = "GTiff", overwrite = TRUE)
+```
+
+
+Hier gaan we nu de maandelijkse begrazingsanomalie berekenen (genormaliseerd voor hoeveelheid begrazing in die maand). 
+
+```{r}
+
+# --- preparatory steps (as before) ---
+chm_ras1 <- rast('wh_vh1m.tif')
+crs(chm_ras1) <- crss
+
+chm_ras25 <- aggregate(chm_ras1, fact = 5 / res(chm_ras1)[1], fun = "mean")
+template_raster <- rast(ext(chm_ras25), resolution = 5, crs = crs(chm_ras25))
+
+data_westhoek$x <- as.numeric(as.character(data_westhoek$x))
+data_westhoek$y <- as.numeric(as.character(data_westhoek$y))
+data_vect <- vect(data_westhoek, geom = c("x", "y"), crs = crss)
+
+# --- 1. rasterize & clamp each month into a list ---
+months <- sort(unique(data_westhoek$month))
+grazing_by_month <- vector("list", length(months))
+names(grazing_by_month) <- months
+
+for (m in months) {
+  pts_m <- vect(data_westhoek[data_westhoek$month == m, ], geom = c("x","y"), crs = crss)
+  r_m   <- rasterize(pts_m, template_raster, fun = "count", background = 0)
+  r_m[r_m > 40] <- 40
+  r_m[grazing_density == 0] <- NA
+  grazing_by_month[[as.character(m)]] <- r_m
+}
+
+# --- 2. stack layers & compute target sum for normalization ---
+g_stack   <- rast(grazing_by_month)
+totals    <- global(g_stack, "sum", na.rm = TRUE)[,1]
+target    <- mean(totals)
+
+# --- 3. normalize each layer to have sum == target ---
+norm_stack <- g_stack * (target / totals)
+
+# --- 4. compute mean raster across months ---
+mean_ras <- app(norm_stack, mean, na.rm = TRUE)
+
+# --- 5. compute difference-from-mean stack ---
+diff_stack <- norm_stack - mean_ras
+
+month_nums <- as.integer(names(diff_stack))
+
+# select only 03–09
+sel <- which(month_nums >= 4 & month_nums <= 8)
+
+# sum only those layers
+period_anomaly <- app(
+  diff_stack[[sel]],
+  fun   = mean,
+  na.rm = TRUE
+)
+
+# write out
+out_period <- file.path( "grazing_diff_norm_period_04_08.tif")
+writeRaster(
+  period_anomaly,
+  filename = out_period,
+  filetype = "GTiff",
+  overwrite=TRUE
+)
+
+# and plot
+plot(
+  period_anomaly,
+  main = "Anomaly March–September (04–08)",
+  axes = FALSE,
+  box  = FALSE
+)
+
+
+# --- 6. write out each diff raster ---
+for (i in seq_len(nlyr(diff_stack))) {
+  m        <- names(diff_stack)[i]
+  out_file <- sprintf("grazing_diff_norm_month_%s.tif", m)
+  writeRaster(diff_stack[[i]]-period_anomaly, filename = out_file, overwrite = TRUE)
+}
+
+# --- 7. plot all monthly “anomaly” rasters in a multi-panel ---
+nl   <- nlyr(diff_stack)
+ncol <- 3
+nrow <- ceiling(nl / ncol)
+
+par(mfrow = c(nrow, ncol), mar = c(2,2,2,1))
+for (i in seq_len(nl)) {
+  month_name <- names(diff_stack)[i]
+  plot(
+    diff_stack[[i]],
+    main = paste("Anomaly Month", month_name),
+    axes = FALSE,
+    box = FALSE
+  )
+}
+par(mfrow = c(1,1))  # reset
+
+```
+
+```{r}
+# get numeric month from layer names
+month_nums <- as.integer(names(diff_stack))
+
+# select only 03–09
+sel <- which(month_nums >= 3 & month_nums <= 9)
+
+# sum only those layers
+period_anomaly <- app(
+  diff_stack[[sel]],
+  fun   = sum,
+  na.rm = TRUE
+)
+
+# write out
+out_period <- file.path("grazing_diff_norm_period_03_09.tif")
+writeRaster(
+  period_anomaly,
+  filename = out_period,
+  filetype = "GTiff",
+  overwrite=TRUE
+)
+
+# and plot
+plot(
+  period_anomaly,
+  main = "Anomaly March–September (03–09)",
+  axes = FALSE,
+  box  = FALSE
+)
+
+```
+
+
+Hier gaan we op basis van de twee afgeleide van de Gaussian (een meer outlier robuuste CHM) een gradient berekenen. Dit is een techniek die vaak gebruikt wordt in beeldverwerking om randen te detecteren.
+```{r}
+chm_matrix <- as.matrix(chm_ras1)
+chm_ras1[chm_ras1>1.2] <- 1.2
+# Apply Gaussian blur for noise reduction
+apply_gaussian_blur <- function(mat, sigma = 1) {
+  kernel_size <- 5
+  gaussian_filter <- matrix(0, nrow = kernel_size, ncol = kernel_size)
+  center <- (kernel_size + 1) / 2
+
+  for (i in 1:kernel_size) {
+    for (j in 1:kernel_size) {
+      x <- i - center
+      y <- j - center
+      gaussian_filter[i, j] <- exp(-(x^2 + y^2) / (2 * sigma^2))
+    }
+  }
+
+  gaussian_filter <- gaussian_filter / sum(gaussian_filter)
+
+  # Apply Gaussian blur using terra::focal
+  mat_blurred <- focal(mat, w = gaussian_filter, fun = sum, na.rm = TRUE)
+  return(mat_blurred)
+}
+
+# Apply Gaussian blur
+chm_blurred <- apply_gaussian_blur(chm_ras1)
+
+# Calculate gradient magnitude (edgeness)
+grad_x <- focal(chm_blurred, w = matrix(c(-1, 0, 1, -2, 0, 2, -1, 0, 1), 3, 3))
+grad_y <- focal(chm_blurred, w = matrix(c(-1, -2, -1, 0, 0, 0, 1, 2, 1), 3, 3))
+grad_magnitude <- sqrt(grad_x^2 + grad_y^2)
+
+
+
+chm_edges_aggregated <- aggregate(grad_magnitude, fact = 5, fun = "mean", na.rm = FALSE)
+
+
+
+# Save the filtered edge-detected raster
+
+# Display result
+blue_yellow_palette <- colorRampPalette(c("blue", "yellow"))
+
+# Plotting with Blue to Yellow Color Scale
+
+
+plot(chm_ras1, 
+     main = "CHM Raster", 
+     col = blue_yellow_palette(100))
+
+plot(chm_edges_aggregated, 
+     main = "Aggregated Edge Detection", 
+     col = blue_yellow_palette(100))
+plot(grad_magnitude, 
+     main = "Edge Detection", 
+     col = blue_yellow_palette(100))
+
+
+```
+
+Hier gaan we op basis van de eerste afgeleide van de Gaussian een gradient berekenen. Dit is een techniek die vaak gebruikt wordt in beeldverwerking om randen te detecteren. Dit lijkt ook beter te werken dan de tweede afgeleide. Het moet niet altijd mathematisch complexer zijn ;-)
+```{r}
+
+
+chm_ras1 = raster('wh_vh1m.tif', crs = crss)
+chm_ras1[chm_ras1 < 0] <- 0
+chm_ras1[chm_ras1>2] <- 2
+
+# 1D Gaussian and its derivative
+gauss1d <- function(size=5, sigma=1) {
+  x <- seq(-(size-1)/2, (size-1)/2, length.out = size)
+  k <- exp(-x^2/(2*sigma^2))
+  k / sum(k)
+}
+dog1d <- function(size=5, sigma=1) {
+  x <- seq(-(size-1)/2, (size-1)/2, length.out = size)
+  d <- -x * exp(-x^2/(2*sigma^2)) / (sigma^2)
+  d / sum(abs(d))
+}
+
+# Apply gradient‐of‐Gaussian
+apply_grad_gaussian <- function(ras, size=5, sigma=1) {
+  g <- gauss1d(size, sigma)
+  d <- dog1d(size, sigma)
+
+  # Gx: smooth in y, derive in x
+  gx <- focal(focal(ras, w=matrix(g, ncol=1), fun=sum),
+              w=matrix(d, nrow=1), fun=sum)
+  # Gy: smooth in x, derive in y
+  gy <- focal(focal(ras, w=matrix(g, nrow=1), fun=sum),
+              w=matrix(d, ncol=1), fun=sum)
+
+  sqrt(gx^2 + gy^2)
+}
+
+# Usage
+chm_gradmag <- apply_grad_gaussian(chm_ras1, size=7, sigma=1.5)
+
+
+
+gradmag_aggr <- aggregate(chm_gradmag, fact = 5, fun = "mean", na.rm = FALSE)
+
+
+q1_5m <- aggregate(chm_ras1,fact = 5,fun  = function(x, na.rm=TRUE) quantile(x, probs = 0.25, na.rm=na.rm)
+)
+gradmag_aggr[q1_5m > 0.4] <- 0
+
+#gradmag_aggr[chm_ras5 > 0.85] <- 0
+plot(gradmag_aggr, main="Gradient of Gaussian Magnitude (Aggregated)")
+plot(chm_ras1, 
+     main = "CHM Raster", 
+     col = blue_yellow_palette(100))
+writeRaster(gradmag_aggr, 'wh_vh1m_edges_filtered.tif', overwrite = TRUE)
+
+```
+
+
+```{r}
+# 1. Make a 1D Gaussian kernel
+gauss1d <- function(size=7, sigma=2) {
+  x <- seq(-(size-1)/2, (size-1)/2, length.out = size)
+  k <- exp(-x^2/(2*sigma^2))
+  k / sum(k)
+}
+
+# 2. Build a 2D Gaussian kernel by outer product
+size  <- 3     # e.g. 7×7 window
+sigma <- 1     # controls blur radius (cells)
+g1d   <- gauss1d(size, sigma)
+gk    <- outer(g1d, g1d)     # 2D kernel
+gk    <- gk / sum(gk)        # normalize so sum = 1
+
+# 3. Apply the blur to produce a “glow” around edges
+smoothed_edges <- focal(
+  gradmag_aggr,  # your 5 m gradient‐magnitude raster
+  w    = gk,     # the normalized 2D kernel
+  fun  = sum,    # weighted sum
+  na.rm = TRUE,  # ignore NAs
+  pad   = TRUE   # pad edges with NA so output aligns
+)
+
+# 4. Plot to compare
+par(mfrow = c(1,2))
+plot(gradmag_aggr,   main = "Original edge magnitude")
+plot(smoothed_edges, main = "Smoothed (Gaussian blur)")
+
+# (optional) write out
+writeRaster(smoothed_edges,"wh_vh1m_edges_glow.tif",
+            overwrite = TRUE)
+
+```
+
+```{r}
+writeRaster(chm_edges_aggregated, 'wh_vh1m_edges_aggregated.tif', overwrite = TRUE)
+writeRaster(gradmag_aggr,'wh_vh1m_edges_filtered.tif', overwrite = TRUE)
+
+chm_mean_f = aggregate(chm_ras5, fun = "mean", fact =5) #merk op dat we hier ons 25x25m raster genereren
+writeRaster(chm_mean_f, 
+            filename ="chm_mean25.tif", 
+            filetype = "GTiff", 
+            overwrite = TRUE)
+```
+
+
+Eerst laden we de vegetatiekaart in. We schrijven voor elk vegetatietype een raster (geotiff) uit. Dit raster is een binair raster dat aangeeft of een vegetatietype aanwezig is in een cel of niet. 
+
+```{r }
+drv_id <- as_id("1sqQMS6AcEkRAA9wgaqhI-FtdsCcwzSDF")
+local_gpkg <- "vegetatiekaart.gpkg"
+drive_download(
+  file      = drv_id,
+  path      = local_gpkg,
+  overwrite = TRUE
+)
+
+template <- terra::rast(chm_ras5)
+
+# 1. now load it with terra
+veg_vect <- vect(local_gpkg)
+classes <- unique(veg_vect$Klasse)
+out_dir <- "vegclass"
+if (!dir.exists(out_dir)) {
+  dir.create(out_dir, recursive = TRUE)
+}
+for (cls in classes) {
+  # subset polygons
+  sub_vect <- veg_vect[veg_vect$Klasse == cls, ]
+  
+  # 3a) rasterize with fun="count" → counts of polygons per cell (in principe altijd = 1 want polygonen overlappen niet)
+  r_count <- terra::rasterize(
+    x          = sub_vect,
+    y          = template,
+    fun        = "count",
+    background = 0
+  )
+  
+  # 3b) binarize to 0/1 if desired:
+  r_cls <- classify(
+    r_count,
+    matrix(c(
+      0,   0,   0,
+      1, Inf, 1
+    ), ncol=3, byrow=TRUE)
+  )
+  # —OR— to keep raw counts, just use r_count:
+  # r_cls <- r_count
+
+  # safe filename
+  cls_safe <- gsub("[^A-Za-z0-9_]", "_", cls)
+  out_fname <- paste0(cls_safe, ".tif")
+  
+  # write GeoTIFF into grazing_folder
+  writeRaster(
+    r_cls,
+    filename  = file.path("vegclass", out_fname),
+    filetype  = "GTiff",
+    datatype  = "INT2U",  # 0/1 unsigned integer if binarized (or counts up to 65535)
+    overwrite = TRUE
+  )
+  
+  message("Written: ", file.path(out_fname))
+}
+
+
+```
+
+Hier gebruiken we min of meer hetzelfde model als model en modelanalyse om op basis van ruimtelijke autocorrelatie en vegetatietype de begrazingsdruk te voorspellen. Het deel dat niet door deze componenten kan voorspeld worden is ons residu. Dit slaan we op. Door in een volgende stap dit residu te gaan correleren aan het voorkomen van individuele soorten krijgen we een beeld van de onafhankelijke invloed van elke individuele soort, althans dat is de hypothese. 
+
+
+```{r pressure, echo=FALSE}
+
+#──────────────────────────────────────────────────────────────────────────────
+# Loop over all grazing rasters, two‐part INLA, then residual of the sum
+#──────────────────────────────────────────────────────────────────────────────
+
+
+target_crs     <- crss    # your CRS object
+
+
+# 1. load classe predictors
+cls_files   <- c(list.files("vegclass/", pattern="\\.tif$", full.names=TRUE))
+cls_names   <- sub("\\.tif$","", basename(cls_files))
+class_stack <- rast(cls_files)
+names(class_stack) <- cls_names
+
+# 2. list grazing rasters
+g_files <- c(
+  apr     = file.path("grazing_diff_norm_month_04.tif"),
+  mei     = file.path("grazing_diff_norm_month_05.tif"),
+  jun     = file.path( "grazing_diff_norm_month_06.tif"),
+  jul     = file.path( "grazing_diff_norm_month_07.tif"),
+  aug     = file.path("grazing_diff_norm_month_08.tif"),
+  all_year     = file.path("grazing_density_5m")
+)
+
+
+# 3. process each grazing metric
+for(gname in names(g_files)) {
+  message(">>> ", gname)
+
+  # 3a) load & aggregate to 25 m  
+  ras <- rast(g_files[gname])
+  crs(ras) <- target_crs
+
+  # 3b) binary presence/absence raster  
+  ras_bin <- ifel(ras > 0, 1, NA)  
+
+  # 3c) estimate Box–Cox λ on the positives  
+  vals_pos <- values(ras, na.rm=TRUE)
+  vals_pos <- vals_pos[vals_pos > 0]
+  if(length(vals_pos) < 20) {
+    warning("  too few positives—skipping ", gname); next
+  }
+  bc     <- boxcox(vals_pos ~ 1, plotit=FALSE)
+  lambda <- bc$x[which.max(bc$y)]
+  message(sprintf("  λ = %.3f", lambda))
+
+  # 3d) extract into a data.table  
+  stk <- c(class_stack, ras_bin, ras)
+  names(stk) <- c(cls_names, "y_bin", "y_cont")
+  dt  <- as.data.table(values(stk, dataframe=TRUE, na.rm=FALSE))
+  xy  <- as.data.table(xyFromCell(stk, seq_len(ncell(stk))))
+  dt  <- cbind(xy, dt)[!is.na(y_bin)]
+  setnames(dt, "y_cont", "obs")
+
+  # —— NEW: drop any class predictors with no occurrences —— 
+  present_cls <- cls_names[sapply(cls_names, function(cl) any(dt[[cl]] == 1, na.rm=TRUE))]
+  if(length(present_cls) == 0) {
+    warning("  no classes present in ", gname, " — skipping model")
+    next
+  }
+  message("  using classes: ", paste(present_cls, collapse=", "))
+
+  # 3e) build neighbour graph for Besag  
+  coords <- as.matrix(dt[, .(x,y)])
+  nb     <- knearneigh(coords, k=4) |> knn2nb(sym=TRUE)
+  W      <- as(nb2mat(nb, style="B"), "sparseMatrix")
+  diag(W) <- 0
+  dt[, spatial_id := .I]
+  g     <- inla.read.graph(W)
+
+  # 3f) fit binary logistic  
+  #    only include `present_cls` in the formula
+  bin_formula <- as.formula(
+    paste0("y_bin ~ 1 + f(spatial_id, model='besag', graph=g)",
+           " + ", paste(present_cls, collapse=" + "))
+  )
+  mb <- inla(
+    formula         = bin_formula,
+    data            = dt,
+    family          = "binomial",
+    control.compute = list(dic=TRUE, waic=TRUE)
+  )
+  dt[, fitted_bin := mb$summary.fitted.values[,"mean"]]
+
+  # 3g) fit positive Gaussian on transformed  
+  dtp <- dt[obs > 0]
+  if(nrow(dtp)==0) {
+    warning("  no positives—skipping positive model")
+    dtp[, fitted_pos_orig := 0]
+  } else {
+    if(abs(lambda) < 1e-6) {
+      dtp[, y_tr := log(obs)]
+    } else {
+      dtp[, y_tr := (obs^lambda - 1)/lambda]
+    }
+    pos_formula <- as.formula(
+      paste0("y_tr ~ 1 + f(spatial_id, model='besag', graph=g)",
+             " + ", paste(present_cls, collapse=" + "))
+    )
+    mp <- inla(
+      formula          = pos_formula,
+      data             = dtp,
+      family           = "gaussian",
+      control.family   = list(link="identity"),
+      control.compute  = list(dic=TRUE, waic=TRUE)
+    )
+    dtp[, fitted_tr := mp$summary.fitted.values[,"mean"]]
+
+    # back‐transform to original grazing units
+    if(abs(lambda) < 1e-6) {
+      dtp[, fitted_pos_orig := exp(fitted_tr)]
+    } else {
+      dtp[, fitted_pos_orig := (fitted_tr * lambda + 1)^(1/lambda)]
+    }
+  }
+
+  # 3h) merge back so everyone has fitted_pos_orig (zero where absent)
+  dt[, fitted_pos_orig := 0]
+  dt[dtp, on="spatial_id", fitted_pos_orig := fitted_pos_orig]
+
+  # 3i) sum the two fitted parts and compute residual  
+  dt[, fitted_sum := fitted_bin + fitted_pos_orig]
+  dt[, resid_sum  := obs - fitted_sum]
+
+  # 3j) rasterize resid_sum back to the grazing grid  
+  pts   <- vect(dt[, .(x,y,resid_sum)], geom=c("x","y"), crs=crs(ras))
+  r_res <- rasterize(pts, ras, field="resid_sum", background=NA)
+
+  # 3k) write out  
+  out_fn <- file.path(sprintf("residual_sum_%s.tif", gname))
+  writeRaster(r_res, filename=out_fn, filetype="GTiff",
+              datatype="FLT4S", overwrite=TRUE)
+  message("  → wrote ", out_fn, "\n")
+}
+
+message("All done!") 
+
+```
+---
+title: "Model Vegetatiestructuur & Visualisatie"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Global options
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+
+# Required libraries
+library(tidyverse)
+library(terra)
+library(INLA)
+library(data.table)
+library(spdep)
+library(Matrix)
+library(raster)
+```
+
+## Load Canopy Height Model (CHM) Metrics
+```{r load_chm}
+
+plot_dir     <- "plots/"
+setwd("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R")
+# Create plot directory if needed
+if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
+
+# Load CHM metrics as a named list
+chm_metrics_25 <- list(
+  #mean    = rast(file.path( "chm_mean25.tif")),
+  begrazing_apr = rast(file.path( "grazing_diff_norm_month_04.tif")),
+  begrazing_mei = rast(file.path( "grazing_diff_norm_month_05.tif")),
+  begrazing_jun   = rast(file.path( "grazing_diff_norm_month_06.tif")),
+  begrazing_jul  = rast(file.path( "grazing_diff_norm_month_07.tif")),
+  begrazing_aug     = rast(file.path( "grazing_diff_norm_month_08.tif"))
+)
+
+
+chm_metrics_5 <- list(
+  #shannon = rast(file.path( "chm_shannon.tif")),
+  mean    = rast(chm_ras5),
+  #max     = rast(file.path( "chm_max.tif")),
+  #min     = rast(file.path( "chm_min.tif")),
+  edgness_glow = rast(file.path( "wh_vh1m_edges_glow.tif")),
+  begrazing_onaf = rast(file.path( "residual_sum_all_year.tif")),
+  #edgness_avg = rast(file.path( "wh_vh1m_edges_aggregated.tif")),
+  edgness_2 = rast(file.path( "wh_vh1m_edges_filtered.tif"))
+)
+
+crss = " +proj=lcc +lat_0=90 +lon_0=4.36748666666667 +lat_1=49.8333339 +lat_2=51.1666672333333 +x_0=150000.01256 +y_0=5400088.4378 +ellps=intl +units=m +no_defs  "
+
+cell_size <- 5 #default celgroote voor dit project
+
+chm_ras1 = raster('wh_vh1m.tif', crs = crss)
+chm_ras1[chm_ras1 < 0] <- NA
+chm_ras1[chm_ras1 > 1.5] <- NA
+
+chm_ras5 = aggregate(chm_ras1, fun = "mean", fact = cell_size/res(chm_ras1))
+```
+
+```{r}
+# Calculate correlations between all CHM metrics
+calculate_chm_correlations <- function(chm_metrics) {
+  message("Calculating correlations between CHM metrics")
+
+  # Stack all CHM metrics into a single raster stack
+  chm_stack <- rast(chm_metrics)
+
+  # Extract values as a dataframe
+  chm_df <- as.data.frame(terra::values(chm_stack, na.rm = TRUE))
+  colnames(chm_df) <- names(chm_metrics)
+
+  # Remove any rows with NA values
+  chm_df <- chm_df[complete.cases(chm_df),]
+
+  # Calculate correlation matrix
+  cor_matrix <- cor(chm_df, method = "pearson")
+
+  return(cor_matrix)
+}
+
+
+cor_matrix <- calculate_chm_correlations(chm_metrics_5)
+print(cor_matrix)
+```
+```{r}
+
+
+```
+
+
+## Functions: Process & Model per Species: doet enkel analyses van resolutie 25m
+```{r functions}
+
+analyze_species_25 <- function(path, chm_metrics) {
+  species_name <- sub("_combined\\.tif$", "", basename(path))
+  message("Processing: ", species_name)
+
+  # --- read & aggregate to 25m
+  ras <- rast(path)
+  ras <- aggregate(ras, fun = "sum", fact = 5)
+  crs(ras) <- crss
+
+  # --- mask & build binaries
+  ras[ras < 0.5] <- 0
+  bin_ras <- ifel(ras > 0, 1, NA)    # NA beyond any non-zero
+  ras_bin <- ifel(ras > 0.5, 1, 0)   # 0/1 presence
+
+  # --- estimate Box–Cox λ once for all metrics
+  all_vals <- terra::values(ras, na.rm = TRUE)
+  pos_vals <- all_vals[all_vals > 0]
+  if (length(pos_vals) < 20) {
+    warning(sprintf("Too few positive values for '%s' — skipping species.", species_name))
+    return(NULL)    # skip this species instead of aborting
+  }
+  bc     <- boxcox(pos_vals ~ 1, plotit = FALSE)
+  lambda <- bc$x[which.max(bc$y)]
+  message(sprintf("  Box–Cox λ for %s = %.3f", species_name, lambda))
+
+  results25 <- list()
+
+  for (m in names(chm_metrics)) {
+    message("  Metric: ", m)
+    chm <- chm_metrics[[m]]
+
+    # --- stack & extract
+    stk <- c(chm, ras_bin, ras)
+    names(stk) <- c("chm", "species_binary", "species")
+    vals  <- terra::values(stk, dataframe = TRUE, na.rm = TRUE)
+    cells <- which(!is.na(vals$chm))
+    df    <- as.data.table(cbind(terra::xyFromCell(stk, cells), vals[cells, ]))
+
+    if (nrow(df) == 0 || sum(df$species_binary) == 0) {
+      warning("  no data or no presences — skipping.")
+      next
+    }
+    if (sum(df$species > 1) < 20) {
+      warning("  <20 overlapping values — skipping.")
+      next
+    }
+
+    # --- neighborhood & graph
+    coords_mat <- as.matrix(df[, .(x,y)])
+    nb         <- knearneigh(coords_mat, k = 4) |> knn2nb(sym = TRUE)
+    W          <- as(nb2mat(nb, style = "B"), "sparseMatrix")
+    diag(W)    <- 0
+    if (nrow(W) != nrow(df)) {
+      warning("  neighbour matrix mismatch — skipping.")
+      next
+    }
+    df[, spatial_id := .I]
+    g <- inla.read.graph(W)
+
+    # --- 1) binary model
+    mb <- inla(
+      species_binary ~ chm + f(spatial_id, model="besag", graph=g),
+      data            = df, 
+      family          = "binomial",
+      control.compute = list(dic=TRUE, waic=TRUE)
+    )
+
+    # --- 2) positive (Box–Cox + Gaussian) model
+    dfp <- df[species > 0]
+    mp  <- NULL
+    if (nrow(dfp) > 0) {
+      # apply the pre‐computed λ
+      if (abs(lambda) < 1e-6) {
+        dfp[, species_tr := log(species)]
+      } else {
+        dfp[, species_tr := (species^lambda - 1) / lambda]
+      }
+
+      # fit Gaussian on transformed response
+      mp <- inla(
+        species_tr ~ chm + f(spatial_id, model="besag", graph=g),
+        data            = dfp,
+        family          = "gaussian",
+        control.family  = list(link = "identity"),
+        control.compute = list(dic=TRUE, waic=TRUE)
+      )
+
+      # optional: diagnostic residuals
+      fitted_vals <- mp$summary.fitted.values$mean
+      resid_vals  <- dfp$species_tr - fitted_vals
+    }
+
+    results25[[m]] <- list(
+      binary_model   = mb,
+      positive_model = list(model = mp, lambda = lambda)
+    )
+  }
+
+  return(results25)
+}
+
+
+```
+
+TER INFO: OP 5m resolutie is er wel veel data. Hoge kans dat je computer vastloopt.
+
+analyses van resolutie 5m
+```{r}
+analyze_species_5 <- function(path, chm_metrics) {
+  species_name <- gsub("_combined.tif$", "", basename(path))
+  message("Processing: ", species_name)
+
+  ras <- rast(path)
+  ras[ras < 0.2] <- 0
+  crs(ras) <- crss
+
+  # Mask distant zeros
+  bin_ras <- ifel(ras > 0.5, 1, NA)
+  d0       <- distance(bin_ras)
+  ras[d0 >= 0 & ras == 0] <- NA
+  ras_bin  <- ifel(ras > 0.5, 1, 0)
+
+  # 1) extract all positive species values once
+  all_vals <- terra::values(ras, na.rm = TRUE)
+  pos_vals <- all_vals[all_vals > 0]
+  if (length(pos_vals) < 20) {
+    stop("Too few positive species values to estimate a stable Box–Cox λ")
+  }
+
+  # 2) estimate λ once
+  bc   <- MASS::boxcox(pos_vals ~ 1, plotit = FALSE)
+  lambda <- bc$x[which.max(bc$y)]
+  message(sprintf("  Box–Cox λ for %s = %.3f", species_name, lambda))
+
+  results <- list()
+
+  for (m in names(chm_metrics)) {
+    message("  Metric: ", m)
+    chm <- chm_metrics[[m]]
+
+    # Stack and clean
+    stk   <- c(chm, ras_bin, ras)
+    names(stk) <- c("chm", "species_binary", "species")
+    vals  <- terra::values(stk, dataframe = TRUE, na.rm = TRUE)
+    ok    <- which(!is.na(vals$chm))
+    df    <- as.data.table(cbind(terra::xyFromCell(stk, ok), vals[ok, ]))
+
+    if (nrow(df) == 0 || sum(df$species_binary) == 0) next
+    if (sum(df$species > 1 & df$chm > 0) < 20) {
+      warning("Less than 20 overlapping values — skipping metric.")
+      next
+    }
+
+    # spatial structure
+    coords <- as.matrix(df[, .(x,y)])
+    nb     <- knearneigh(coords, k = 4) |> knn2nb(sym = TRUE)
+    W      <- as(nb2mat(nb, style = "B"), "sparseMatrix")
+    diag(W) <- 0
+    if (nrow(W) != nrow(df)) next
+
+    df[, spatial_id := .I]
+    g <- inla.read.graph(W)
+
+    # binary model
+    mb <- inla(
+      species_binary ~ chm + f(spatial_id, model = "besag", graph = g),
+      data            = df,
+      family          = "binomial",
+      control.compute = list(dic = TRUE, waic = TRUE)
+    )
+
+    # positive model, reusing λ
+    dfp <- df[species > 0]
+    dfp[, species_tr := if (abs(lambda) < 1e-6) 
+                             log(species) 
+                           else 
+                             (species^lambda - 1) / lambda]
+
+    mp <- inla(
+      species_tr ~ chm + f(spatial_id, model = "besag", graph = g),
+      data            = dfp,
+      family          = "gaussian",
+      control.family  = list(link = "identity"),
+      control.compute = list(dic = TRUE, waic = TRUE)
+    )
+
+    results[[m]] <- list(
+      binary_model   = mb,
+      positive_model = list(model = mp, lambda = lambda)
+    )
+  }
+
+  return(results)
+}
+
+
+```
+
+
+
+Hier kan je het model eindelijk runnen. Dit is echter het zwaarste stuk van heel het project. Doe dit dus niet zomaar! Om tijd te besparen kan je de test data (alternatieve species_folder) gebruiken. Hier gebruik je dan een subset van de data.
+
+Merk op: Je dient nog te selecteren of je het model wil runnen voor de 5m resolutie parameters of 25m resolutie parameters (eg. begrazing). En dat op twee plaatsen, zie comments. 
+
+Zorg dat je geen bestanden geopend hebt die INLA gebruikt (bijvoorbeeld de rasters). Anders crasht het programma.
+
+
+
+```{r process_all, message=TRUE, warning=TRUE}
+# Apply analyze_species across all TIFF files
+chm_metrics <- chm_metrics_5 #kies 5 (m) of 25  (m) resolutie
+
+process_all_species <- function(dir, chm_metrics) {
+  all <- list.files(dir, full.names = TRUE)
+  tif <- all[endsWith(all, "_combined.tif")]
+  out <- list()
+  for (f in tif) {
+    out[[basename(f)]] <- analyze_species_5(f, chm_metrics)#kies opnieuw 5 (m) of 25  (m) resolutie
+    gc()
+  }
+  return(out)
+}
+
+species_folder <- getwd()
+all_results5 <- process_all_species(species_folder, chm_metrics)
+
+
+```
+
+Hier gaan we de namen veranderen naar nederlandse namen. Kies ook opnieuw of je met de resultaten van 5m of 25m resolutie werkt.
+
+```{r}
+all_results <- all_results5
+
+# 2. Prepare the lookup map: names = CODE, values = NEDERLANDSENAAMLEN
+name_map <- setNames(lookup_table$NEDERLANDSENAAMLEN,
+                     lookup_table$CODE)
+
+# 3. Clean and remap all_results names
+#    a) strip “_combined.tif”
+clean_sp <- sub("_combined\\.tif$", "", names(all_results))
+
+#    b) map to Dutch names when CODE matches, otherwise keep cleaned code
+new_sp <- ifelse(
+  clean_sp %in% names(name_map),
+  name_map[clean_sp],
+  clean_sp
+)
+
+# 4. Assign the new names back
+names(all_results) <- new_sp
+species_names <- names(all_results)
+```
+
+
+
+
+## Visualization of positive data
+```{r run_all}
+plot_boxcox_model <- function(sp, mn, pos_res, plot_dir, x_range) {
+  cat("Plotting Box–Cox model for:", sp, mn, "\n")
+  
+  # pull out the INLA fit and λ
+  model  <- pos_res$model
+  lambda <- pos_res$lambda
+  
+  # fixed effects
+  fe   <- model$summary.fixed
+  b0   <- fe["(Intercept)", "mean"]
+  b1   <- fe["chm",         "mean"]
+  se1  <- fe["chm", "sd"]
+  pval <- 2 * (1 - pnorm(abs(b1 / se1)))
+  cat("  λ =", round(lambda,3), "| Intercept =", round(b0,3),
+      "| Slope =", round(b1,3), "| p =", format.pval(pval,3), "\n")
+  
+  # build prediction grid
+  grid <- seq(x_range[1], x_range[2], length.out = 200)
+  eta  <- b0 + b1 * grid
+  
+  # back-transform from Box–Cox
+  if (abs(lambda) < 1e-6) {
+    mu <- exp(eta)
+  } else {
+    mu <- (lambda * eta + 1)^(1/lambda)
+  }
+  pd <- tibble(x = grid, fit = mu)
+  
+  # make plot
+  p <- ggplot(pd, aes(x = x, y = fit)) +
+    geom_line(size = 1) +
+    labs(
+      title    = paste("Species:", sp),
+      subtitle = paste(mn, 
+                       sprintf("(λ=%.2f, p=%s)", 
+                               lambda, format.pval(pval,2))),
+      x        = "CHM metric",
+      y        = "Abundance (back-transformed)"
+    ) +
+    theme_minimal()
+  
+  # save
+  out_file <- file.path(plot_dir, paste0(sp, "_", mn, "_boxcox.png"))
+  cat("Saving to:", out_file, "\n")
+  ggsave(out_file, p, width = 7, height = 5, dpi = 300)
+  cat("Done.\n\n")
+}
+
+# Example of main loop:
+# assume `all_results` is a named list of species → metrics → models
+# and that .positive_model is a list(model=lambda)
+
+# Make sure chm_metrics is in scope, e.g.:
+# chm_metrics <- chm_metrics_5
+
+for (sp in names(all_results)) {
+  cat("=== Species:", sp, "===\n")
+  for (mn in names(all_results[[sp]])) {
+    pm <- all_results[[sp]][[mn]]$positive_model
+    if (is.null(pm$model)) {
+      cat(" Skipping", mn, "- no positive model\n")
+      next
+    }
+    cat("✅ Metric:", mn, "\n")
+    
+    # pull the CHM raster for this metric
+    chm <- chm_metrics[[mn]]
+    
+    # compute its min & max as numeric
+    stats   <- terra::global(chm, c("min","max"), na.rm=TRUE)
+    x_range <- as.numeric(stats[1, ])  # c(min, max)
+    
+    # now call your existing plotting function
+    plot_boxcox_model(
+      sp, mn,
+      pos_res = pm,
+      plot_dir = plot_dir,
+      x_range  = x_range
+    )
+  }
+}
+
+
+
+
+```
+
+```{r}
+  saveRDS(
+    res,
+    file = file.path(plot_dir, paste0(sp, "_all_metrics_res.rds"))
+  )
+```
+Results of binary data. 
+```{r}
+binary_sig_summary_all <- 
+  # 1) iterate over your species_names vector
+  map_dfr(species_names, function(sp) {
+    # 2) get that species’ results
+    res <- all_results[[sp]]
+    if (is.null(res)) return(NULL)
+    
+    # 3) for each metric in that species
+    imap_dfr(res, function(mr, mn) {
+      bm <- mr$binary_model
+      if (is.null(bm)) return(NULL)
+      
+      # 4) extract and tidy the fixed‐effects summary
+      as.data.frame(bm$summary.fixed) %>%
+        rownames_to_column("Predictor") %>%
+        rename(
+          mean    = mean,
+          sd      = sd,
+          lower90 = `0.025quant`,
+          upper90 = `0.975quant`
+        ) %>%
+        mutate(
+          Species = sp,
+          Metric  = mn,
+          # two‐sided p‐value
+          p.value = 2 * (1 - pnorm(abs(mean / sd)))
+        ) %>%
+        dplyr::select(Species, Metric, Predictor, mean, sd, p.value, lower90, upper90)
+    })
+  })
+
+# 5) Print the results
+if (nrow(binary_sig_summary_all) > 0) {
+  kable(
+    binary_sig_summary_all,
+    caption = "Binary‐Model Fixed Effects (with p-values)"
+  )
+} else {
+  cat("No binary‐model predictors found across any species.\n")
+}
+
+
+```
+
+```{r}
+df_results <- as.data.frame(binary_sig_summary_all)
+
+# inspect
+print(head(df_results))
+
+csv_file <- file.path(plot_dir, "binary_sig_summary_all.csv")
+write.csv2(df_results, csv_file, row.names = FALSE)
+cat("Written:", csv_file, "\n")
+```
+Hier combineren we het logistische (binaire) model en het gaussiaanse model. We nemen als het ware de som van de twee modellen.
+
+
+```{r}
+library(dplyr)
+library(purrr)
+library(knitr)
+
+# 0) Helper to extract summary.fixed as a tibble (dropping intercept)
+get_fixed <- function(inla_model) {
+  as.data.frame(inla_model$summary.fixed) %>%
+    rownames_to_column("Predictor") %>%
+    rename(mean = mean, sd = sd) %>%
+    filter(Predictor != "(Intercept)")
+}
+
+# 1) Compute and store combined effects for each predictor
+all_results <- map(all_results, function(res_sp) {
+  map(res_sp, function(mr) {
+    bm <- mr$binary_model
+    pm <- mr$positive_model$model
+    if (!is.null(bm) && !is.null(pm)) {
+      fb <- get_fixed(bm) %>% rename(bin_mean = mean, bin_sd = sd)
+      fp <- get_fixed(pm) %>% rename(pos_mean = mean, pos_sd = sd)
+
+      ce_tbl <- inner_join(fb, fp, by = "Predictor") %>%
+        transmute(
+          Predictor,
+          mean = bin_mean + pos_mean,
+          sd   = sqrt(bin_sd^2 + pos_sd^2),
+          pval = 2 * (1 - pnorm(abs(mean / sd)))
+        )
+
+      mr$combined_effect <- ce_tbl
+    }
+    mr
+  })
+})
+
+# 2) Build a long summary tibble
+combined_summary <- imap_dfr(all_results, function(res_sp, sp) {
+  imap_dfr(res_sp, function(mr, mn) {
+    ce <- mr$combined_effect
+    if (is.null(ce) || nrow(ce) == 0) return(NULL)
+    ce %>%
+      mutate(Species = sp, Metric = mn) %>%
+      dplyr::select(Species, Metric, Predictor, mean, sd, pval)
+  })
+})
+
+# 3) Print
+if (nrow(combined_summary) > 0) {
+  kable(
+    combined_summary,
+    caption = "Combined (Logistic + Box–Cox Gaussian) Effects per Predictor"
+  )
+} else {
+  cat("No common predictors found in both models for any species/metric.\n")
+}
+
+
+
+```
+
+
+```{r}
+df_results <- as.data.frame(combined_summary)
+
+# inspect
+print(head(df_results))
+
+csv_file <- file.path(plot_dir, "combined_summary_all.csv")
+write.csv2(df_results, csv_file, row.names = FALSE)
+cat("Written:", csv_file, "\n")
+```
+
+```{r}
+positive_sig_summary_all <-
+  map_dfr(species_names, function(sp) {
+    res <- all_results[[sp]]
+    if (is.null(res)) return(NULL)
+
+    imap_dfr(res, function(mr, mn) {
+      pm <- mr$positive_model
+      if (is.null(pm$model)) return(NULL)    # skip if no positive model
+
+      gm <- pm$model                          # grab the INLA fit
+
+      as.data.frame(gm$summary.fixed) %>%
+        rownames_to_column("Predictor") %>%
+        rename(
+          pos_mean    = mean,
+          pos_sd      = sd,
+          pos_lower90 = `0.025quant`,
+          pos_upper90 = `0.975quant`
+        ) %>%
+        mutate(
+          Species     = sp,
+          Metric      = mn,
+          pos_p.value = 2 * (1 - pnorm(abs(pos_mean / pos_sd)))
+        ) %>%
+        dplyr::select(
+          Species, Metric, Predictor,
+          pos_mean, pos_sd, pos_p.value,
+          pos_lower90, pos_upper90
+        )
+    })
+  })
+
+# then continue with your bin / comb / full-join workflow…
+
+
+# — 2) Pull in your binary summary and combined summary, renaming columns to avoid clashes
+bin  <- binary_sig_summary_all %>%
+  rename(
+    bin_mean    = mean,
+    bin_sd      = sd,
+    bin_p.value = p.value,
+    bin_lower90 = lower90,
+    bin_upper90 = upper90
+  )
+
+comb <- combined_summary %>%
+  rename(
+    comb_mean = mean,
+    comb_sd   = sd,
+    comb_pval = pval
+  )
+
+# — 3) Full-join all three on Species, Metric & Predictor
+full_summary <- bin %>%
+  full_join(positive_sig_summary_all, by = c("Species","Metric","Predictor")) %>%
+  full_join(comb,                     by = c("Species","Metric","Predictor")) %>%
+  # optional: order nicely
+  arrange(Species, Metric, Predictor)
+
+# — 4) Print and export
+kable(full_summary,
+      caption = "Binary, Positive and Combined Effects per Predictor") 
+
+# write to CSV (using semicolon as separator)
+csv_file <- file.path(plot_dir, "all_effects_summary.csv")
+write.csv2(full_summary, csv_file, row.names = FALSE)
+cat("Written:", csv_file, "\n")
+
+```
+
+
