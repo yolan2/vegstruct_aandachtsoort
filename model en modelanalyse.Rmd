@@ -539,18 +539,7 @@ library(googledrive)
 library(readxl)
 
 all_results <- all_results25
-tmp_lookup <- tempfile(fileext = ".xlsx")
-drive_auth()
-# download the Google Sheet as xlsx
-drive_download(
-  as_id("1-hlCyqBvBbhOLiPWDGNZPa20i8dRq0yr"),  # your sheet’s file ID
-  path      = tmp_lookup,
-  type      = "xlsx",
-  overwrite = TRUE
-)
 
-# read the “soorten” sheet (you can also use sheet = 2 if you prefer index)
-lookup_table <- read_excel(tmp_lookup, sheet = "Soorten")
 # 2. Prepare the lookup map: names = CODE, values = NEDERLANDSENAAMLEN
 name_map <- setNames(lookup_table$NEDERLANDSENAAMLEN,
                      lookup_table$CODE)
@@ -671,11 +660,6 @@ for (sp in names(all_results)) {
 ```
 Results of binary data. 
 ```{r}
-library(dplyr)
-library(tibble)
-library(purrr)
-library(knitr)
-
 binary_sig_summary_all <- 
   # 1) iterate over your species_names vector
   map_dfr(species_names, function(sp) {
@@ -807,13 +791,6 @@ cat("Written:", csv_file, "\n")
 ```
 
 ```{r}
-
-
-library(dplyr)
-library(tibble)
-library(purrr)
-library(knitr)
-
 positive_sig_summary_all <-
   map_dfr(species_names, function(sp) {
     res <- all_results[[sp]]

@@ -273,9 +273,6 @@ plot(
 ```
 
 
-
-
-
 Hier gaan we op basis van de twee afgeleide van de Gaussian (een meer outlier robuuste CHM) een gradient berekenen. Dit is een techniek die vaak gebruikt wordt in beeldverwerking om randen te detecteren.
 ```{r}
 chm_matrix <- as.matrix(chm_ras1)
@@ -394,11 +391,9 @@ plot(chm_ras1,
 writeRaster(gradmag_aggr, paste0(folder,'wh_vh1m_edges_filtered.tif'), overwrite = TRUE)
 
 ```
+
+
 ```{r}
-library(terra)
-
-# assume gradmag_aggr is your 5 m SpatRaster from before
-
 # 1. Make a 1D Gaussian kernel
 gauss1d <- function(size=7, sigma=2) {
   x <- seq(-(size-1)/2, (size-1)/2, length.out = size)

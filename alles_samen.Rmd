@@ -3,10 +3,16 @@
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
   echo      = TRUE,
-  warning   = TRUE,
+  warning   = FALSE,
   message   = TRUE,
   cache     = FALSE
 )
+```
+
+# 2. Kies hier je werkmap en typ 1 om authenticatie te starten of 2 als je al verbonden bent
+
+```{r wd-and-auth}
+drive_auth()
 ```
 
 # 1. Load Libraries
@@ -36,11 +42,7 @@ library(data.table)
 library(Matrix)
 ```
 
-# 2. Kies hier je werkmap en typ 1 om authenticatie te starten of 2 als je al verbonden bent
 
-```{r wd-and-auth}
-drive_auth()
-```
 
 # 3. Canopy Height Raster (25 cm → 1 m)
 
@@ -691,67 +693,6 @@ plot(
 ```
 
 
-Hier gaan we op basis van de twee afgeleide van de Gaussian (een meer outlier robuuste CHM) een gradient berekenen. Dit is een techniek die vaak gebruikt wordt in beeldverwerking om randen te detecteren.
-```{r}
-chm_matrix <- as.matrix(chm_ras1)
-chm_ras1[chm_ras1>1.2] <- 1.2
-# Apply Gaussian blur for noise reduction
-apply_gaussian_blur <- function(mat, sigma = 1) {
-  kernel_size <- 5
-  gaussian_filter <- matrix(0, nrow = kernel_size, ncol = kernel_size)
-  center <- (kernel_size + 1) / 2
-
-  for (i in 1:kernel_size) {
-    for (j in 1:kernel_size) {
-      x <- i - center
-      y <- j - center
-      gaussian_filter[i, j] <- exp(-(x^2 + y^2) / (2 * sigma^2))
-    }
-  }
-
-  gaussian_filter <- gaussian_filter / sum(gaussian_filter)
-
-  # Apply Gaussian blur using terra::focal
-  mat_blurred <- focal(mat, w = gaussian_filter, fun = sum, na.rm = TRUE)
-  return(mat_blurred)
-}
-
-# Apply Gaussian blur
-chm_blurred <- apply_gaussian_blur(chm_ras1)
-
-# Calculate gradient magnitude (edgeness)
-grad_x <- focal(chm_blurred, w = matrix(c(-1, 0, 1, -2, 0, 2, -1, 0, 1), 3, 3))
-grad_y <- focal(chm_blurred, w = matrix(c(-1, -2, -1, 0, 0, 0, 1, 2, 1), 3, 3))
-grad_magnitude <- sqrt(grad_x^2 + grad_y^2)
-
-
-
-chm_edges_aggregated <- aggregate(grad_magnitude, fact = 5, fun = "mean", na.rm = FALSE)
-
-
-
-# Save the filtered edge-detected raster
-
-# Display result
-blue_yellow_palette <- colorRampPalette(c("blue", "yellow"))
-
-# Plotting with Blue to Yellow Color Scale
-
-
-plot(chm_ras1, 
-     main = "CHM Raster", 
-     col = blue_yellow_palette(100))
-
-plot(chm_edges_aggregated, 
-     main = "Aggregated Edge Detection", 
-     col = blue_yellow_palette(100))
-plot(grad_magnitude, 
-     main = "Edge Detection", 
-     col = blue_yellow_palette(100))
-
-
-```
-
 Hier gaan we op basis van de eerste afgeleide van de Gaussian een gradient berekenen. Dit is een techniek die vaak gebruikt wordt in beeldverwerking om randen te detecteren. Dit lijkt ook beter te werken dan de tweede afgeleide. Het moet niet altijd mathematisch complexer zijn ;-)
 ```{r}
 
@@ -845,9 +786,6 @@ writeRaster(smoothed_edges,"wh_vh1m_edges_glow.tif",
 ```
 
 ```{r}
-writeRaster(chm_edges_aggregated, 'wh_vh1m_edges_aggregated.tif', overwrite = TRUE)
-writeRaster(gradmag_aggr,'wh_vh1m_edges_filtered.tif', overwrite = TRUE)
-
 chm_mean_f = aggregate(chm_ras5, fun = "mean", fact =5) #merk op dat we hier ons 25x25m raster genereren
 writeRaster(chm_mean_f, 
             filename ="chm_mean25.tif", 
@@ -1062,36 +1000,12 @@ message("All done!")
 
 ```
 ---
-title: "Model Vegetatiestructuur & Visualisatie"
-output: html_document
+"Model Vegetatiestructuur & Visualisatie"
 ---
 
-```{r setup, include=FALSE}
-# Global options
-knitr::opts_chunk$set(
-  echo = TRUE,
-  message = FALSE,
-  warning = FALSE
-)
-
-# Required libraries
-library(tidyverse)
-library(terra)
-library(INLA)
-library(data.table)
-library(spdep)
-library(Matrix)
-library(raster)
-```
 
 ## Load Canopy Height Model (CHM) Metrics
 ```{r load_chm}
-
-plot_dir     <- "plots/"
-setwd("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/R")
-# Create plot directory if needed
-if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
-
 # Load CHM metrics as a named list
 chm_metrics_25 <- list(
   #mean    = rast(file.path( "chm_mean25.tif")),
@@ -1150,11 +1064,7 @@ calculate_chm_correlations <- function(chm_metrics) {
 cor_matrix <- calculate_chm_correlations(chm_metrics_5)
 print(cor_matrix)
 ```
-```{r}
-
-
-```
-
+en nu +/-dezelfde functie voor data van 25mx25m
 
 ## Functions: Process & Model per Species: doet enkel analyses van resolutie 25m
 ```{r functions}
@@ -1178,7 +1088,7 @@ analyze_species_25 <- function(path, chm_metrics) {
   pos_vals <- all_vals[all_vals > 0]
   if (length(pos_vals) < 20) {
     warning(sprintf("Too few positive values for '%s' — skipping species.", species_name))
-    return(NULL)    # skip this species instead of aborting
+    return(NULL)
   }
   bc     <- boxcox(pos_vals ~ 1, plotit = FALSE)
   lambda <- bc$x[which.max(bc$y)]
@@ -1220,45 +1130,51 @@ analyze_species_25 <- function(path, chm_metrics) {
 
     # --- 1) binary model
     mb <- inla(
-      species_binary ~ chm + f(spatial_id, model="besag", graph=g),
-      data            = df, 
+      species_binary ~ chm + f(spatial_id, model = "besag", graph = g),
+      data            = df,
       family          = "binomial",
-      control.compute = list(dic=TRUE, waic=TRUE)
+      control.compute = list(dic = TRUE, waic = TRUE)
     )
 
-    # --- 2) positive (Box–Cox + Gaussian) model
+    # --- 2) positive (Box–Cox + Gaussian) & Gamma models
     dfp <- df[species > 0]
-    mp  <- NULL
-    if (nrow(dfp) > 0) {
-      # apply the pre‐computed λ
-      if (abs(lambda) < 1e-6) {
-        dfp[, species_tr := log(species)]
-      } else {
-        dfp[, species_tr := (species^lambda - 1) / lambda]
-      }
+    mp_gauss <- mp_gamma <- NULL
 
-      # fit Gaussian on transformed response
-      mp <- inla(
-        species_tr ~ chm + f(spatial_id, model="besag", graph=g),
+    if (nrow(dfp) > 0) {
+      # Box–Cox transform
+      dfp[, species_tr := if (abs(lambda) < 1e-6)
+                            log(species)
+                          else
+                            (species^lambda - 1) / lambda]
+
+      # Gaussian model
+      mp_gauss <- inla(
+        species_tr ~ chm + f(spatial_id, model = "besag", graph = g),
         data            = dfp,
         family          = "gaussian",
         control.family  = list(link = "identity"),
-        control.compute = list(dic=TRUE, waic=TRUE)
+        control.compute = list(dic = TRUE, waic = TRUE)
       )
 
-      # optional: diagnostic residuals
-      fitted_vals <- mp$summary.fitted.values$mean
-      resid_vals  <- dfp$species_tr - fitted_vals
+      # Gamma model
+      mp_gamma <- inla(
+        species ~ chm + f(spatial_id, model = "besag", graph = g),
+        data            = dfp,
+        family          = "gamma",
+        control.compute = list(dic = TRUE, waic = TRUE)
+      )
     }
 
     results25[[m]] <- list(
       binary_model   = mb,
-      positive_model = list(model = mp, lambda = lambda)
+      positive_model_gaussian = list(model = mp_gauss, lambda = lambda),
+      positive_model_gamma    = mp_gamma
     )
   }
 
   return(results25)
 }
+
 
 
 ```
@@ -1330,14 +1246,16 @@ analyze_species_5 <- function(path, chm_metrics) {
       control.compute = list(dic = TRUE, waic = TRUE)
     )
 
-    # positive model, reusing λ
+    # positive-only data
     dfp <- df[species > 0]
-    dfp[, species_tr := if (abs(lambda) < 1e-6) 
-                             log(species) 
-                           else 
-                             (species^lambda - 1) / lambda]
 
-    mp <- inla(
+    # Box–Cox–transformed gaussian model
+    dfp[, species_tr := if (abs(lambda) < 1e-6)
+                          log(species)
+                        else
+                          (species^lambda - 1) / lambda]
+
+    mp_gauss <- inla(
       species_tr ~ chm + f(spatial_id, model = "besag", graph = g),
       data            = dfp,
       family          = "gaussian",
@@ -1345,9 +1263,18 @@ analyze_species_5 <- function(path, chm_metrics) {
       control.compute = list(dic = TRUE, waic = TRUE)
     )
 
+    # Gamma model (non-transformed)
+    mp_gamma <- inla(
+      species ~ chm + f(spatial_id, model = "besag", graph = g),
+      data            = dfp,
+      family          = "gamma",
+      control.compute = list(dic = TRUE, waic = TRUE)
+    )
+
     results[[m]] <- list(
       binary_model   = mb,
-      positive_model = list(model = mp, lambda = lambda)
+      positive_model_gaussian = list(model = mp_gauss, lambda = lambda),
+      positive_model_gamma    = mp_gamma
     )
   }
 
@@ -1414,103 +1341,6 @@ species_names <- names(all_results)
 ```
 
 
-
-
-## Visualization of positive data
-```{r run_all}
-plot_boxcox_model <- function(sp, mn, pos_res, plot_dir, x_range) {
-  cat("Plotting Box–Cox model for:", sp, mn, "\n")
-  
-  # pull out the INLA fit and λ
-  model  <- pos_res$model
-  lambda <- pos_res$lambda
-  
-  # fixed effects
-  fe   <- model$summary.fixed
-  b0   <- fe["(Intercept)", "mean"]
-  b1   <- fe["chm",         "mean"]
-  se1  <- fe["chm", "sd"]
-  pval <- 2 * (1 - pnorm(abs(b1 / se1)))
-  cat("  λ =", round(lambda,3), "| Intercept =", round(b0,3),
-      "| Slope =", round(b1,3), "| p =", format.pval(pval,3), "\n")
-  
-  # build prediction grid
-  grid <- seq(x_range[1], x_range[2], length.out = 200)
-  eta  <- b0 + b1 * grid
-  
-  # back-transform from Box–Cox
-  if (abs(lambda) < 1e-6) {
-    mu <- exp(eta)
-  } else {
-    mu <- (lambda * eta + 1)^(1/lambda)
-  }
-  pd <- tibble(x = grid, fit = mu)
-  
-  # make plot
-  p <- ggplot(pd, aes(x = x, y = fit)) +
-    geom_line(size = 1) +
-    labs(
-      title    = paste("Species:", sp),
-      subtitle = paste(mn, 
-                       sprintf("(λ=%.2f, p=%s)", 
-                               lambda, format.pval(pval,2))),
-      x        = "CHM metric",
-      y        = "Abundance (back-transformed)"
-    ) +
-    theme_minimal()
-  
-  # save
-  out_file <- file.path(plot_dir, paste0(sp, "_", mn, "_boxcox.png"))
-  cat("Saving to:", out_file, "\n")
-  ggsave(out_file, p, width = 7, height = 5, dpi = 300)
-  cat("Done.\n\n")
-}
-
-# Example of main loop:
-# assume `all_results` is a named list of species → metrics → models
-# and that .positive_model is a list(model=lambda)
-
-# Make sure chm_metrics is in scope, e.g.:
-# chm_metrics <- chm_metrics_5
-
-for (sp in names(all_results)) {
-  cat("=== Species:", sp, "===\n")
-  for (mn in names(all_results[[sp]])) {
-    pm <- all_results[[sp]][[mn]]$positive_model
-    if (is.null(pm$model)) {
-      cat(" Skipping", mn, "- no positive model\n")
-      next
-    }
-    cat("✅ Metric:", mn, "\n")
-    
-    # pull the CHM raster for this metric
-    chm <- chm_metrics[[mn]]
-    
-    # compute its min & max as numeric
-    stats   <- terra::global(chm, c("min","max"), na.rm=TRUE)
-    x_range <- as.numeric(stats[1, ])  # c(min, max)
-    
-    # now call your existing plotting function
-    plot_boxcox_model(
-      sp, mn,
-      pos_res = pm,
-      plot_dir = plot_dir,
-      x_range  = x_range
-    )
-  }
-}
-
-
-
-
-```
-
-```{r}
-  saveRDS(
-    res,
-    file = file.path(plot_dir, paste0(sp, "_all_metrics_res.rds"))
-  )
-```
 Results of binary data. 
 ```{r}
 binary_sig_summary_all <- 
@@ -1557,24 +1387,11 @@ if (nrow(binary_sig_summary_all) > 0) {
 
 ```
 
-```{r}
-df_results <- as.data.frame(binary_sig_summary_all)
 
-# inspect
-print(head(df_results))
-
-csv_file <- file.path(plot_dir, "binary_sig_summary_all.csv")
-write.csv2(df_results, csv_file, row.names = FALSE)
-cat("Written:", csv_file, "\n")
-```
 Hier combineren we het logistische (binaire) model en het gaussiaanse model. We nemen als het ware de som van de twee modellen.
 
 
 ```{r}
-library(dplyr)
-library(purrr)
-library(knitr)
-
 # 0) Helper to extract summary.fixed as a tibble (dropping intercept)
 get_fixed <- function(inla_model) {
   as.data.frame(inla_model$summary.fixed) %>%
@@ -1632,82 +1449,130 @@ if (nrow(combined_summary) > 0) {
 ```
 
 
-```{r}
-df_results <- as.data.frame(combined_summary)
 
-# inspect
-print(head(df_results))
 
-csv_file <- file.path(plot_dir, "combined_summary_all.csv")
-write.csv2(df_results, csv_file, row.names = FALSE)
-cat("Written:", csv_file, "\n")
-```
+
 
 ```{r}
-positive_sig_summary_all <-
-  map_dfr(species_names, function(sp) {
-    res <- all_results[[sp]]
-    if (is.null(res)) return(NULL)
+get_fixed <- function(inla_model) {
+  as.data.frame(inla_model$summary.fixed) %>%
+    rownames_to_column("Predictor") %>%
+    rename(mean = mean, sd = sd) %>%
+    filter(Predictor != "(Intercept)")
+}
 
-    imap_dfr(res, function(mr, mn) {
-      pm <- mr$positive_model
-      if (is.null(pm$model)) return(NULL)    # skip if no positive model
+# 1) Voeg gecombineerde effecten toe aan all_results
+all_results <- map(all_results, function(res_sp) {
+  map(res_sp, function(mr) {
+    bm <- mr$binary_model
+    pm <- mr$positive_model$model
+    gm <- mr$gamma_model
 
-      gm <- pm$model                          # grab the INLA fit
+    # combinatie: bin + Box-Cox
+    if (!is.null(bm) && !is.null(pm)) {
+      fb <- get_fixed(bm) %>% rename(bin_mean = mean, bin_sd = sd)
+      fp <- get_fixed(pm) %>% rename(pos_mean = mean, pos_sd = sd)
 
-      as.data.frame(gm$summary.fixed) %>%
-        rownames_to_column("Predictor") %>%
-        rename(
-          pos_mean    = mean,
-          pos_sd      = sd,
-          pos_lower90 = `0.025quant`,
-          pos_upper90 = `0.975quant`
-        ) %>%
-        mutate(
-          Species     = sp,
-          Metric      = mn,
-          pos_p.value = 2 * (1 - pnorm(abs(pos_mean / pos_sd)))
-        ) %>%
-        dplyr::select(
-          Species, Metric, Predictor,
-          pos_mean, pos_sd, pos_p.value,
-          pos_lower90, pos_upper90
+      mr$combined_cox <- inner_join(fb, fp, by = "Predictor") %>%
+        transmute(
+          Predictor,
+          comb_cox_mean = bin_mean + pos_mean,
+          comb_cox_sd   = sqrt(bin_sd^2 + pos_sd^2),
+          comb_cox_pval = 2 * (1 - pnorm(abs((bin_mean + pos_mean) / sqrt(bin_sd^2 + pos_sd^2))))
         )
-    })
+    }
+
+    # combinatie: bin + gamma
+    if (!is.null(bm) && !is.null(gm)) {
+      fb <- get_fixed(bm) %>% rename(bin_mean = mean, bin_sd = sd)
+      fg <- get_fixed(gm) %>% rename(gam_mean = mean, gam_sd = sd)
+
+      mr$combined_gamma <- inner_join(fb, fg, by = "Predictor") %>%
+        transmute(
+          Predictor,
+          comb_gam_mean = bin_mean + gam_mean,
+          comb_gam_sd   = sqrt(bin_sd^2 + gam_sd^2),
+          comb_gam_pval = 2 * (1 - pnorm(abs((bin_mean + gam_mean) / sqrt(bin_sd^2 + gam_sd^2))))
+        )
+    }
+
+    mr
   })
+})
 
-# then continue with your bin / comb / full-join workflow…
+# 2) Bouw samenvattende tabel
+full_summary <- map_dfr(species_names, function(sp) {
+  res <- all_results[[sp]]
+  if (is.null(res)) return(NULL)
 
+  imap_dfr(res, function(mr, mn) {
+    # binaire model
+    bin <- if (!is.null(mr$binary_model)) {
+      as.data.frame(mr$binary_model$summary.fixed) %>%
+        rownames_to_column("Predictor") %>%
+        rename(bin_mean = mean, bin_sd = sd, bin_lower90 = `0.025quant`, bin_upper90 = `0.975quant`) %>%
+        mutate(
+          bin_pval = 2 * (1 - pnorm(abs(bin_mean / bin_sd))),
+          Species = sp,
+          Metric = mn
+        ) %>%
+        select(Species, Metric, Predictor, bin_mean, bin_sd, bin_pval, bin_lower90, bin_upper90)
+    } else NULL
 
-# — 2) Pull in your binary summary and combined summary, renaming columns to avoid clashes
-bin  <- binary_sig_summary_all %>%
-  rename(
-    bin_mean    = mean,
-    bin_sd      = sd,
-    bin_p.value = p.value,
-    bin_lower90 = lower90,
-    bin_upper90 = upper90
-  )
+    # positieve (box-cox) model
+    pos <- if (!is.null(mr$positive_model$model)) {
+      as.data.frame(mr$positive_model$model$summary.fixed) %>%
+        rownames_to_column("Predictor") %>%
+        rename(pos_mean = mean, pos_sd = sd, pos_lower90 = `0.025quant`, pos_upper90 = `0.975quant`) %>%
+        mutate(
+          pos_pval = 2 * (1 - pnorm(abs(pos_mean / pos_sd))),
+          Species = sp,
+          Metric = mn
+        ) %>%
+        select(Species, Metric, Predictor, pos_mean, pos_sd, pos_pval, pos_lower90, pos_upper90)
+    } else NULL
 
-comb <- combined_summary %>%
-  rename(
-    comb_mean = mean,
-    comb_sd   = sd,
-    comb_pval = pval
-  )
+    # positieve gamma model(alternatief)
+    gam <- if (!is.null(mr$gamma_model)) {
+      as.data.frame(mr$gamma_model$summary.fixed) %>%
+        rownames_to_column("Predictor") %>%
+        rename(gam_mean = mean, gam_sd = sd, gam_lower90 = `0.025quant`, gam_upper90 = `0.975quant`) %>%
+        mutate(
+          gam_pval = 2 * (1 - pnorm(abs(gam_mean / gam_sd))),
+          Species = sp,
+          Metric = mn
+        ) %>%
+        select(Species, Metric, Predictor, gam_mean, gam_sd, gam_pval, gam_lower90, gam_upper90)
+    } else NULL
 
-# — 3) Full-join all three on Species, Metric & Predictor
-full_summary <- bin %>%
-  full_join(positive_sig_summary_all, by = c("Species","Metric","Predictor")) %>%
-  full_join(comb,                     by = c("Species","Metric","Predictor")) %>%
-  # optional: order nicely
+    # gecombineerd bin + box-cox
+    cox <- if (!is.null(mr$combined_cox)) {
+      mr$combined_cox %>%
+        mutate(Species = sp, Metric = mn) %>%
+        select(Species, Metric, Predictor, comb_cox_mean, comb_cox_sd, comb_cox_pval)
+    } else NULL
+
+    # gecombineerd bin + gamma
+    cg <- if (!is.null(mr$combined_gamma)) {
+      mr$combined_gamma %>%
+        mutate(Species = sp, Metric = mn) %>%
+        select(Species, Metric, Predictor, comb_gam_mean, comb_gam_sd, comb_gam_pval)
+    } else NULL
+
+    # alles samenvoegen
+    list(bin, pos, gam, cox, cg) %>%
+      reduce(full_join, by = c("Species", "Metric", "Predictor"))
+  })
+}) %>%
   arrange(Species, Metric, Predictor)
 
-# — 4) Print and export
-kable(full_summary,
-      caption = "Binary, Positive and Combined Effects per Predictor") 
+# 3) Print & schrijf weg
+if (nrow(full_summary) > 0) {
+  kable(full_summary, caption = "Binary, Positive, Gamma & Combined Effects per Predictor")
+} else {
+  cat("No effects to report.\n")
+}
 
-# write to CSV (using semicolon as separator)
 csv_file <- file.path(plot_dir, "all_effects_summary.csv")
 write.csv2(full_summary, csv_file, row.names = FALSE)
 cat("Written:", csv_file, "\n")

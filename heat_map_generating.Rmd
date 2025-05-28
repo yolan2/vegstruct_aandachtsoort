@@ -184,7 +184,7 @@ species_list <- unique(final_points$SOORTSCODE)
 kde_results <- list()
 species_list_valid = list()
 
-chm_ras5 = raster("C:/Users/yolan/OneDrive/Documenten/UGENT/Master/Stage/hoogtemetrieken/chm_mean5.tif")
+
 # Iterate over each species
 for (species in species_list) {
   
