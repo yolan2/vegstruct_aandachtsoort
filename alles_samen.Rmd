@@ -11,9 +11,7 @@ knitr::opts_chunk$set(
 
 # 2. Kies hier je werkmap en typ 1 om authenticatie te starten of 2 als je al verbonden bent
 
-```{r wd-and-auth}
-drive_auth()
-```
+
 
 # 1. Load Libraries
 
@@ -40,6 +38,7 @@ library(tidyverse)
 library(INLA)
 library(data.table)
 library(Matrix)
+library(knitr)
 ```
 
 
@@ -1314,9 +1313,7 @@ all_results5 <- process_all_species(species_folder, chm_metrics)
 
 
 ```
-
 Hier gaan we de namen veranderen naar nederlandse namen. Kies ook opnieuw of je met de resultaten van 5m of 25m resolutie werkt.
-
 ```{r}
 all_results <- all_results5
 
@@ -1339,125 +1336,16 @@ new_sp <- ifelse(
 names(all_results) <- new_sp
 species_names <- names(all_results)
 ```
-
-
-Results of binary data. 
-```{r}
-binary_sig_summary_all <- 
-  # 1) iterate over your species_names vector
-  map_dfr(species_names, function(sp) {
-    # 2) get that species’ results
-    res <- all_results[[sp]]
-    if (is.null(res)) return(NULL)
-    
-    # 3) for each metric in that species
-    imap_dfr(res, function(mr, mn) {
-      bm <- mr$binary_model
-      if (is.null(bm)) return(NULL)
-      
-      # 4) extract and tidy the fixed‐effects summary
-      as.data.frame(bm$summary.fixed) %>%
-        rownames_to_column("Predictor") %>%
-        rename(
-          mean    = mean,
-          sd      = sd,
-          lower90 = `0.025quant`,
-          upper90 = `0.975quant`
-        ) %>%
-        mutate(
-          Species = sp,
-          Metric  = mn,
-          # two‐sided p‐value
-          p.value = 2 * (1 - pnorm(abs(mean / sd)))
-        ) %>%
-        dplyr::select(Species, Metric, Predictor, mean, sd, p.value, lower90, upper90)
-    })
-  })
-
-# 5) Print the results
-if (nrow(binary_sig_summary_all) > 0) {
-  kable(
-    binary_sig_summary_all,
-    caption = "Binary‐Model Fixed Effects (with p-values)"
-  )
-} else {
-  cat("No binary‐model predictors found across any species.\n")
-}
-
-
-```
-
-
-Hier combineren we het logistische (binaire) model en het gaussiaanse model. We nemen als het ware de som van de twee modellen.
-
+Hier maken we een kort overzicht van de resultaten. Voor een uitgebreider overzicht moet je in het model en modelanlyse script kijken. 
 
 ```{r}
-# 0) Helper to extract summary.fixed as a tibble (dropping intercept)
+calc_pval <- function(mu, sigma) 2 * (1 - pnorm(abs(mu / sigma)))
+
 get_fixed <- function(inla_model) {
-  as.data.frame(inla_model$summary.fixed) %>%
+  inla_model$summary.fixed %>%
+    as.data.frame() %>%
     rownames_to_column("Predictor") %>%
-    rename(mean = mean, sd = sd) %>%
-    filter(Predictor != "(Intercept)")
-}
-
-# 1) Compute and store combined effects for each predictor
-all_results <- map(all_results, function(res_sp) {
-  map(res_sp, function(mr) {
-    bm <- mr$binary_model
-    pm <- mr$positive_model$model
-    if (!is.null(bm) && !is.null(pm)) {
-      fb <- get_fixed(bm) %>% rename(bin_mean = mean, bin_sd = sd)
-      fp <- get_fixed(pm) %>% rename(pos_mean = mean, pos_sd = sd)
-
-      ce_tbl <- inner_join(fb, fp, by = "Predictor") %>%
-        transmute(
-          Predictor,
-          mean = bin_mean + pos_mean,
-          sd   = sqrt(bin_sd^2 + pos_sd^2),
-          pval = 2 * (1 - pnorm(abs(mean / sd)))
-        )
-
-      mr$combined_effect <- ce_tbl
-    }
-    mr
-  })
-})
-
-# 2) Build a long summary tibble
-combined_summary <- imap_dfr(all_results, function(res_sp, sp) {
-  imap_dfr(res_sp, function(mr, mn) {
-    ce <- mr$combined_effect
-    if (is.null(ce) || nrow(ce) == 0) return(NULL)
-    ce %>%
-      mutate(Species = sp, Metric = mn) %>%
-      dplyr::select(Species, Metric, Predictor, mean, sd, pval)
-  })
-})
-
-# 3) Print
-if (nrow(combined_summary) > 0) {
-  kable(
-    combined_summary,
-    caption = "Combined (Logistic + Box–Cox Gaussian) Effects per Predictor"
-  )
-} else {
-  cat("No common predictors found in both models for any species/metric.\n")
-}
-
-
-
-```
-
-
-
-
-
-
-```{r}
-get_fixed <- function(inla_model) {
-  as.data.frame(inla_model$summary.fixed) %>%
-    rownames_to_column("Predictor") %>%
-    rename(mean = mean, sd = sd) %>%
+    as_tibble() %>%
     filter(Predictor != "(Intercept)")
 }
 
@@ -1465,102 +1353,59 @@ get_fixed <- function(inla_model) {
 all_results <- map(all_results, function(res_sp) {
   map(res_sp, function(mr) {
     bm <- mr$binary_model
-    pm <- mr$positive_model$model
-    gm <- mr$gamma_model
-
-    # combinatie: bin + Box-Cox
-    if (!is.null(bm) && !is.null(pm)) {
+    pm_gauss <- mr$positive_model_gaussian$model
+    gm <- mr$positive_model_gamma
+    
+    if (!is.null(bm) && !is.null(pm_gauss)) {
       fb <- get_fixed(bm) %>% rename(bin_mean = mean, bin_sd = sd)
-      fp <- get_fixed(pm) %>% rename(pos_mean = mean, pos_sd = sd)
-
+      fp <- get_fixed(pm_gauss) %>% rename(pos_mean = mean, pos_sd = sd)
+      
       mr$combined_cox <- inner_join(fb, fp, by = "Predictor") %>%
         transmute(
           Predictor,
           comb_cox_mean = bin_mean + pos_mean,
-          comb_cox_sd   = sqrt(bin_sd^2 + pos_sd^2),
-          comb_cox_pval = 2 * (1 - pnorm(abs((bin_mean + pos_mean) / sqrt(bin_sd^2 + pos_sd^2))))
+          comb_cox_sd = sqrt(bin_sd^2 + pos_sd^2),
+          comb_cox_pval = calc_pval(bin_mean + pos_mean, sqrt(bin_sd^2 + pos_sd^2))
         )
     }
-
-    # combinatie: bin + gamma
+    
     if (!is.null(bm) && !is.null(gm)) {
       fb <- get_fixed(bm) %>% rename(bin_mean = mean, bin_sd = sd)
       fg <- get_fixed(gm) %>% rename(gam_mean = mean, gam_sd = sd)
-
+      
       mr$combined_gamma <- inner_join(fb, fg, by = "Predictor") %>%
         transmute(
           Predictor,
           comb_gam_mean = bin_mean + gam_mean,
-          comb_gam_sd   = sqrt(bin_sd^2 + gam_sd^2),
-          comb_gam_pval = 2 * (1 - pnorm(abs((bin_mean + gam_mean) / sqrt(bin_sd^2 + gam_sd^2))))
+          comb_gam_sd = sqrt(bin_sd^2 + gam_sd^2),
+          comb_gam_pval = calc_pval(bin_mean + gam_mean, sqrt(bin_sd^2 + gam_sd^2))
         )
     }
-
+    
     mr
   })
 })
 
-# 2) Bouw samenvattende tabel
+# 2) Bouw samenvattende tabel (ZONDER binary model results)
 full_summary <- map_dfr(species_names, function(sp) {
   res <- all_results[[sp]]
   if (is.null(res)) return(NULL)
-
+  
   imap_dfr(res, function(mr, mn) {
-    # binaire model
-    bin <- if (!is.null(mr$binary_model)) {
-      as.data.frame(mr$binary_model$summary.fixed) %>%
-        rownames_to_column("Predictor") %>%
-        rename(bin_mean = mean, bin_sd = sd, bin_lower90 = `0.025quant`, bin_upper90 = `0.975quant`) %>%
-        mutate(
-          bin_pval = 2 * (1 - pnorm(abs(bin_mean / bin_sd))),
-          Species = sp,
-          Metric = mn
-        ) %>%
-        select(Species, Metric, Predictor, bin_mean, bin_sd, bin_pval, bin_lower90, bin_upper90)
-    } else NULL
-
-    # positieve (box-cox) model
-    pos <- if (!is.null(mr$positive_model$model)) {
-      as.data.frame(mr$positive_model$model$summary.fixed) %>%
-        rownames_to_column("Predictor") %>%
-        rename(pos_mean = mean, pos_sd = sd, pos_lower90 = `0.025quant`, pos_upper90 = `0.975quant`) %>%
-        mutate(
-          pos_pval = 2 * (1 - pnorm(abs(pos_mean / pos_sd))),
-          Species = sp,
-          Metric = mn
-        ) %>%
-        select(Species, Metric, Predictor, pos_mean, pos_sd, pos_pval, pos_lower90, pos_upper90)
-    } else NULL
-
-    # positieve gamma model(alternatief)
-    gam <- if (!is.null(mr$gamma_model)) {
-      as.data.frame(mr$gamma_model$summary.fixed) %>%
-        rownames_to_column("Predictor") %>%
-        rename(gam_mean = mean, gam_sd = sd, gam_lower90 = `0.025quant`, gam_upper90 = `0.975quant`) %>%
-        mutate(
-          gam_pval = 2 * (1 - pnorm(abs(gam_mean / gam_sd))),
-          Species = sp,
-          Metric = mn
-        ) %>%
-        select(Species, Metric, Predictor, gam_mean, gam_sd, gam_pval, gam_lower90, gam_upper90)
-    } else NULL
-
-    # gecombineerd bin + box-cox
+    # REMOVED: Binary model extraction for table
+    # REMOVED: Individual positive and gamma model extractions for table
+    
     cox <- if (!is.null(mr$combined_cox)) {
-      mr$combined_cox %>%
-        mutate(Species = sp, Metric = mn) %>%
-        select(Species, Metric, Predictor, comb_cox_mean, comb_cox_sd, comb_cox_pval)
-    } else NULL
-
-    # gecombineerd bin + gamma
+      mr$combined_cox %>% mutate(Species = sp, Metric = mn)
+    }
+    
     cg <- if (!is.null(mr$combined_gamma)) {
-      mr$combined_gamma %>%
-        mutate(Species = sp, Metric = mn) %>%
-        select(Species, Metric, Predictor, comb_gam_mean, comb_gam_sd, comb_gam_pval)
-    } else NULL
-
-    # alles samenvoegen
-    list(bin, pos, gam, cox, cg) %>%
+      mr$combined_gamma %>% mutate(Species = sp, Metric = mn)
+    }
+    
+    # Combine only combined results (cox and cg)
+    list(cox, cg) %>%
+      compact() %>%
       reduce(full_join, by = c("Species", "Metric", "Predictor"))
   })
 }) %>%
@@ -1568,15 +1413,12 @@ full_summary <- map_dfr(species_names, function(sp) {
 
 # 3) Print & schrijf weg
 if (nrow(full_summary) > 0) {
-  kable(full_summary, caption = "Binary, Positive, Gamma & Combined Effects per Predictor")
+  kable(full_summary, caption = "Combined Effects per Predictor")
 } else {
   cat("No effects to report.\n")
 }
 
-csv_file <- file.path(plot_dir, "all_effects_summary.csv")
+csv_file <- file.path("all_effects_summary.csv")
 write.csv2(full_summary, csv_file, row.names = FALSE)
 cat("Written:", csv_file, "\n")
-
 ```
-
-
