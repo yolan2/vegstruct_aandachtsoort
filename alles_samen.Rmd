@@ -190,6 +190,10 @@ st_write(
 
 message("✅ Data pre-processing completed.")
 ```
+---
+"Heatmap generating"
+---
+
 ```{r making the 5m vegetation height raster}
 crss = " +proj=lcc +lat_0=90 +lon_0=4.36748666666667 +lat_1=49.8333339 +lat_2=51.1666672333333 +x_0=150000.01256 +y_0=5400088.4378 +ellps=intl +units=m +no_defs  "
 
@@ -490,6 +494,11 @@ plot(first_valid, main = paste("Combined raster for", species_name))
 
 plot(kde_results[[species_name]])
 ```
+---
+"Structuur_metrieken Westhoek"
+---
+
+
 INLADEN RASTERS
 ```{r}
 crss = " +proj=lcc +lat_0=90 +lon_0=4.36748666666667 +lat_1=49.8333339 +lat_2=51.1666672333333 +x_0=150000.01256 +y_0=5400088.4378 +ellps=intl +units=m +no_defs  "
@@ -1038,6 +1047,8 @@ chm_ras1[chm_ras1 > 1.5] <- NA
 chm_ras5 = aggregate(chm_ras1, fun = "mean", fact = cell_size/res(chm_ras1))
 ```
 
+Hier gaan we nog even de multicollineariteit onderzoeken zodat we zeker 
+
 ```{r}
 # Calculate correlations between all CHM metrics
 calculate_chm_correlations <- function(chm_metrics) {
@@ -1315,7 +1326,7 @@ all_results5 <- process_all_species(species_folder, chm_metrics)
 ```
 Hier gaan we de namen veranderen naar nederlandse namen. Kies ook opnieuw of je met de resultaten van 5m of 25m resolutie werkt.
 ```{r}
-all_results <- all_results5
+all_results <- all_results5 #kies hier all_results5 of all_results25
 
 # 2. Prepare the lookup map: names = CODE, values = NEDERLANDSENAAMLEN
 name_map <- setNames(lookup_table$NEDERLANDSENAAMLEN,
